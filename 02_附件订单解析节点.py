@@ -1,6 +1,6 @@
 import json
-import typing
 import re
+import typing
 from io import BytesIO
 
 import pandas as pd
@@ -13,6 +13,25 @@ data = {
     "result.inference": False,
     "attachments": [],
     "variables": {}
+}
+
+
+TABLE_HEADER_KEYWORDS = ["货主", "作业类型", "作业日期", "订单号", "物料号", "品名"]
+HEADER_ALIASES = {
+    "shipper_name": ["货主"],
+    "source_job_type": ["作业类型"],
+    "job_date": ["作业日期"],
+    "job_time": ["作业时间"],
+    "job_code": ["作业编号"],
+    "order_number": ["订单号"],
+    "material_code": ["物料号"],
+    "product_name": ["品名"],
+    "batch_number": ["批号"],
+    "unit": ["单位"],
+    "quantity": ["数量"],
+    "status": ["状态"],
+    "specification": ["规格"],
+    "weight": ["重量"],
 }
 
 
@@ -48,159 +67,168 @@ def _download_xlsx(oss_url):
     return BytesIO(response.content)
 
 
-def _cell_text(v):
-    if v is None:
+def _cell_text(value):
+    if value is None:
         return ""
-    if isinstance(v, str):
-        return v.strip()
-    if hasattr(v, "isoformat"):
+    if hasattr(value, "strftime"):
         try:
-            return v.strftime("%Y-%m-%d")
+            return value.strftime("%Y/%m/%d")
         except Exception:
-            return str(v)
-    return str(v).strip()
+            return str(value).strip()
+    return str(value).strip()
 
 
-def _find_row_by_keywords(rows, keywords):
-    for idx, row in enumerate(rows):
-        row_text = " ".join([_cell_text(v) for v in row if _cell_text(v)])
-        if all(keyword in row_text for keyword in keywords):
-            return idx
-    return None
+def _extract_sheet_rows(xlsx_bytes):
+    workbook = pd.ExcelFile(xlsx_bytes, engine="openpyxl")
+    df = pd.read_excel(workbook, sheet_name=0, header=None, dtype=object, engine="openpyxl")
+    return df.where(pd.notnull(df), None).values.tolist()
 
 
-def _extract_value_after_label(rows, label_keywords, row_offset=0, col_offset=1):
-    for r_idx, row in enumerate(rows):
-        for c_idx, cell in enumerate(row):
-            cell_text = _cell_text(cell)
-            if all(keyword in cell_text for keyword in label_keywords):
-                rr = r_idx + row_offset
-                cc = c_idx + col_offset
-                if 0 <= rr < len(rows) and 0 <= cc < len(rows[rr]):
-                    return _cell_text(rows[rr][cc])
-    return ""
-
-
-def _parse_email_body_fields(mail_body):
-    text = _normalize_text(mail_body)
-    result = {}
-    patterns = {
-        "vehicle_number": r"(?:车牌|车辆号码)\s*[:：]?\s*([A-Z\u4e00-\u9fa50-9\-]+)",
-        "driver_name": r"司机姓名\s*[:：]?\s*([^\s\r\n]+)",
-        "driver_phone": r"联系电话\s*[:：]?\s*([0-9\-]{7,20})",
-        "id_number": r"身份证号\s*[:：]?\s*([0-9Xx]{15,18})",
-        "escort_name": r"押运员姓名\s*[:：]?\s*([^\s\r\n]+)",
-    }
-    for key, pattern in patterns.items():
-        m = re.search(pattern, text)
-        if m:
-            result[key] = m.group(1).strip()
-    return result
+def _row_text(row):
+    return " ".join([_cell_text(cell) for cell in row if _cell_text(cell)])
 
 
 def _find_table_start(rows):
-    keywords = ["货主", "作业类型", "作业日期", "订单号", "物料号", "品名"]
-    for idx, row in enumerate(rows):
-        row_text = " ".join([_cell_text(v) for v in row if _cell_text(v)])
-        hit = sum(1 for keyword in keywords if keyword in row_text)
-        if hit >= 4:
-            return idx
+    for row_index, row in enumerate(rows):
+        text = _row_text(row)
+        hit_count = sum(1 for keyword in TABLE_HEADER_KEYWORDS if keyword in text)
+        if hit_count >= 4:
+            return row_index
     return None
+
+
+def _find_column_index(headers, names):
+    for idx, header in enumerate(headers):
+        header_text = _cell_text(header)
+        for name in names:
+            if name in header_text:
+                return idx
+    return None
+
+
+def _is_valid_order(order):
+    job_type = _normalize_text(order.get("source_job_type", ""))
+    order_number = _normalize_text(order.get("order_number", ""))
+    material_code = _normalize_text(order.get("material_code", ""))
+    product_name = _normalize_text(order.get("product_name", ""))
+    quantity = _normalize_text(order.get("quantity", ""))
+    weight = _normalize_text(order.get("weight", ""))
+
+    meaningful_count = sum(
+        1 for value in [order_number, material_code, product_name, quantity, weight] if value
+    )
+    return bool(job_type and meaningful_count >= 2)
 
 
 def _parse_orders(rows, start_row):
     header_row = rows[start_row]
-    headers = [_cell_text(v) for v in header_row]
-
-    def col_idx(*names):
-        for name in names:
-            for i, h in enumerate(headers):
-                if name in h:
-                    return i
-        return None
-
     mapping = {
-        "shipper_name": col_idx("货主"),
-        "source_job_type": col_idx("作业类型"),
-        "job_date": col_idx("作业日期"),
-        "job_time": col_idx("作业时间"),
-        "job_code": col_idx("作业编号"),
-        "order_number": col_idx("订单号"),
-        "material_code": col_idx("物料号"),
-        "product_name": col_idx("品名"),
-        "batch_number": col_idx("批号"),
-        "unit": col_idx("单位"),
-        "specification": col_idx("规格"),
-        "status": col_idx("状态"),
-        "quantity": col_idx("数量"),
-        "weight": col_idx("重量"),
+        key: _find_column_index(header_row, aliases)
+        for key, aliases in HEADER_ALIASES.items()
     }
 
     orders = []
     for row in rows[start_row + 1:]:
-        if not any(_cell_text(v) for v in row):
+        if not _row_text(row):
             if orders:
                 break
             continue
-        first_value = _cell_text(row[0]) if row else ""
-        if first_value and first_value in ("制单：", "作用1：", "备注", "客户信息"):
-            break
 
         order = {}
-        for key, idx in mapping.items():
-            if idx is not None and idx < len(row):
-                order[key] = _cell_text(row[idx])
-            else:
-                order[key] = ""
-        if any(order.values()):
-            if not order.get("job_date") and start_row + 1 < len(rows):
-                order["job_date"] = order.get("job_date", "")
+        for key, col_index in mapping.items():
+            order[key] = _cell_text(row[col_index]) if col_index is not None and col_index < len(row) else ""
+
+        if _is_valid_order(order):
             orders.append(order)
+        elif orders:
+            break
+
     return orders
 
 
+def _find_label_value(rows, labels, min_row=0, max_row=None, col_offset=1, start_col=0):
+    upper_bound = len(rows) if max_row is None else min(max_row, len(rows))
+    for row_index in range(min_row, upper_bound):
+        row = rows[row_index]
+        for col_index in range(start_col, len(row)):
+            cell = row[col_index]
+            cell_text = _cell_text(cell)
+            if cell_text and any(label in cell_text for label in labels):
+                target_col = col_index + col_offset
+                if target_col < len(row):
+                    return _cell_text(row[target_col])
+    return ""
+
+
+def _find_driver_section_row(rows):
+    for row_index, row in enumerate(rows):
+        if "司机车辆信息" in _row_text(row):
+            return row_index
+    return 0
+
+
+def _find_customer_section_row(rows):
+    for row_index, row in enumerate(rows):
+        if "客户信息" in _row_text(row):
+            return row_index
+    return 0
+
+
+def _parse_email_body_fields(mail_body):
+    text = _normalize_text(mail_body)
+    patterns = {
+        "vehicle_number": r"(?:车牌|车牌号码)\s*[:：]?\s*([A-Z\u4e00-\u9fa50-9\-]+)",
+        "driver_name": r"司机姓名\s*[:：]?\s*([^\s\r\n]+)",
+        "driver_phone": r"联系电话\s*[:：]?\s*([0-9\-]{7,20})",
+        "id_number": r"身份证号\s*[:：]?\s*([0-9Xx]{15,18})",
+        "escort_name": r"押运员姓名\s*[:：]?\s*([^\s\r\n]+)",
+        "escort_phone": r"押运员联系电话\s*[:：]?\s*([0-9\-]{7,20})",
+        "escort_id_number": r"押运人身份证号\s*[:：]?\s*([0-9Xx]{15,18})",
+    }
+    result = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text)
+        if match:
+            result[key] = match.group(1).strip()
+    return result
+
+
 def _build_customer_info(email_info, rows):
+    start_row = _find_customer_section_row(rows)
+    end_row = min(start_row + 8, len(rows))
     info = {
-        "customer_company_name": _extract_value_after_label(rows, ["公司名称"]),
-        "customer_contact_name": _extract_value_after_label(rows, ["联系人"]),
-        "customer_phone": _extract_value_after_label(rows, ["联系电话"]),
-        "customer_email": _extract_value_after_label(rows, ["E-mail"]),
-        "customer_address": _extract_value_after_label(rows, ["公司地址"]),
+        "customer_company_name": _find_label_value(rows, ["公司名称"], min_row=start_row, max_row=end_row),
+        "customer_contact_name": _find_label_value(rows, ["联系人"], min_row=start_row, max_row=end_row),
+        "customer_phone": _find_label_value(rows, ["联系电话"], min_row=start_row, max_row=end_row),
+        "customer_email": _find_label_value(rows, ["E-mail"], min_row=start_row, max_row=end_row),
+        "customer_address": _find_label_value(rows, ["公司地址"], min_row=start_row, max_row=end_row),
     }
     if not info["customer_company_name"]:
         info["customer_company_name"] = _safe_get(email_info, "company_name", default="")
     return info
 
 
-def _build_driver_vehicle_info(email_info, rows, body_fields):
+def _build_driver_vehicle_info(rows, body_fields):
+    start_row = _find_driver_section_row(rows)
+    end_row = min(start_row + 10, len(rows))
     info = {
-        "vehicle_number": _extract_value_after_label(rows, ["车牌号码"]) or body_fields.get("vehicle_number", ""),
-        "trailer_number": _extract_value_after_label(rows, ["挂车号码"]),
-        "driver_name": _extract_value_after_label(rows, ["司机姓名"]) or body_fields.get("driver_name", ""),
-        "id_number": _extract_value_after_label(rows, ["身份证号"]) or body_fields.get("id_number", ""),
-        "driver_phone": _extract_value_after_label(rows, ["联系电话"]) or body_fields.get("driver_phone", ""),
-        "escort_name": _extract_value_after_label(rows, ["押运员姓名"]) or body_fields.get("escort_name", ""),
+        "vehicle_number": _find_label_value(rows, ["车牌号码"], min_row=start_row, max_row=end_row, start_col=5) or body_fields.get("vehicle_number", ""),
+        "trailer_number": _find_label_value(rows, ["挂车号码"], min_row=start_row, max_row=end_row, start_col=5),
+        "driver_name": _find_label_value(rows, ["司机姓名"], min_row=start_row, max_row=end_row, start_col=5) or body_fields.get("driver_name", ""),
+        "driver_phone": _find_label_value(rows, ["联系电话"], min_row=start_row + 3, max_row=start_row + 5, col_offset=1, start_col=5) or body_fields.get("driver_phone", ""),
+        "id_number": _find_label_value(rows, ["身份证号"], min_row=start_row + 4, max_row=start_row + 6, start_col=5) or body_fields.get("id_number", ""),
+        "escort_name": _find_label_value(rows, ["押运员姓名"], min_row=start_row, max_row=end_row, start_col=5) or body_fields.get("escort_name", ""),
+        "escort_phone": _find_label_value(rows, ["联系电话"], min_row=start_row + 5, max_row=start_row + 7, col_offset=1, start_col=5) or body_fields.get("escort_phone", ""),
+        "escort_id_number": _find_label_value(rows, ["身份证号"], min_row=start_row + 6, max_row=start_row + 8, start_col=5) or body_fields.get("escort_id_number", ""),
     }
     return info
 
 
-def _normalize_row_values(row):
-    return [None if v is None else v for v in row]
-
-
-def _extract_sheet_rows(xlsx_bytes):
-    wb = pd.ExcelFile(xlsx_bytes, engine="openpyxl")
-    df = pd.read_excel(wb, sheet_name=0, header=None, dtype=object, engine="openpyxl")
-    rows = df.where(pd.notnull(df), None).values.tolist()
-    return rows
-
-
 def main(*args, tool_args: dict, **kwargs) -> typing.Any:
-    """Run Tool"""
-
     data = _new_data()
     email_info = kwargs.get("variables", {}).get("email_info", {}) or {}
     attachments = email_info.get("attachments", []) or []
+
     if not attachments:
         data["result.success"] = True
         data["result.inference"] = True
@@ -232,36 +260,14 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     body_fields = _parse_email_body_fields(email_info.get("mail_body", ""))
     orders = _parse_orders(rows, table_start)
     customer_info = _build_customer_info(email_info, rows)
-    driver_vehicle_info = _build_driver_vehicle_info(email_info, rows, body_fields)
+    driver_vehicle_info = _build_driver_vehicle_info(rows, body_fields)
 
     company_name = customer_info.get("customer_company_name") or _safe_get(email_info, "company_name", default="")
     job_type = _safe_get(email_info, "job_type", default="")
     if not job_type and orders:
         job_type = _safe_get(orders[0], "source_job_type", default="")
-    if not job_type:
-        body_text = _normalize_text(email_info.get("subject", "")) + " " + _normalize_text(email_info.get("mail_body", ""))
-        job_type = "入库" if "入库" in body_text else ("出库" if "出库" in body_text else "")
 
-    source_order_info = []
-    for order in orders:
-        source_order_info.append({
-            "shipper_name": order.get("shipper_name", ""),
-            "source_job_type": order.get("source_job_type", ""),
-            "job_date": order.get("job_date", ""),
-            "job_time": order.get("job_time", ""),
-            "job_code": order.get("job_code", ""),
-            "order_number": order.get("order_number", ""),
-            "material_code": order.get("material_code", ""),
-            "product_name": order.get("product_name", ""),
-            "batch_number": order.get("batch_number", ""),
-            "unit": order.get("unit", ""),
-            "specification": order.get("specification", ""),
-            "status": order.get("status", ""),
-            "quantity": order.get("quantity", ""),
-            "weight": order.get("weight", ""),
-        })
-
-    data["variables"]["source_order_info"] = source_order_info
+    data["variables"]["source_order_info"] = orders
     data["variables"]["customer_info"] = [customer_info]
     data["variables"]["driver_vehicle_info"] = [driver_vehicle_info]
     data["variables"]["company_name"] = company_name
@@ -270,5 +276,13 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     data["variables"]["attachment_oss_url"] = oss_url
     data["result.success"] = True
     data["result.inference"] = True
-    data["result"] = "xlsx parsed"
+    data["result"] = json.dumps(
+        {
+            "company_name": company_name,
+            "job_type": job_type,
+            "order_count": len(orders),
+            "driver_vehicle_info": driver_vehicle_info,
+        },
+        ensure_ascii=False
+    )
     return data

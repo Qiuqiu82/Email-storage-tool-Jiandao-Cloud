@@ -80,6 +80,8 @@ def _build_payload(email_info, customer_info, driver_vehicle_info, source_order_
             "id_number": _wrap(_safe_get(vehicle_row, "id_number", default="")),
             "driver_phone": _wrap(_safe_get(vehicle_row, "driver_phone", default="")),
             "escort_name": _wrap(_safe_get(vehicle_row, "escort_name", default="")),
+            "escort_phone": _wrap(_safe_get(vehicle_row, "escort_phone", default="")),
+            "escort_id_number": _wrap(_safe_get(vehicle_row, "escort_id_number", default="")),
         }]),
         "source_order_info": _wrap([{
             "shipper_name": _wrap(_safe_get(item, "shipper_name", default="")),
@@ -131,10 +133,18 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     """Run Tool"""
 
     data = _new_data()
-    email_info = kwargs.get("variables", {}).get("email_info", {}) or {}
-    customer_info = kwargs.get("variables", {}).get("customer_info", []) or []
-    driver_vehicle_info = kwargs.get("variables", {}).get("driver_vehicle_info", []) or []
-    source_order_info = kwargs.get("variables", {}).get("source_order_info", []) or []
+    variables = kwargs.get("variables", {}) or {}
+    email_info = dict(variables.get("email_info", {}) or {})
+    customer_info = variables.get("customer_info", []) or []
+    driver_vehicle_info = variables.get("driver_vehicle_info", []) or []
+    source_order_info = variables.get("source_order_info", []) or []
+
+    parsed_company_name = variables.get("company_name", "")
+    parsed_job_type = variables.get("job_type", "")
+    if parsed_company_name:
+        email_info["company_name"] = parsed_company_name
+    if parsed_job_type:
+        email_info["job_type"] = parsed_job_type
 
     if not source_order_info:
         data["result.success"] = False
