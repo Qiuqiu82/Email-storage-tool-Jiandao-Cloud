@@ -56,7 +56,7 @@ def _normalize_text(value):
     if value is None:
         return ""
     if isinstance(value, list):
-        return "\n".join([str(v) for v in value if v not in (None, "")]).strip()
+        return "\n".join([str(item) for item in value if item not in (None, "")]).strip()
     return str(value).strip()
 
 
@@ -78,31 +78,31 @@ def _cell_text(value):
     return str(value).strip()
 
 
+def _row_text(row):
+    return " ".join([_cell_text(cell) for cell in row if _cell_text(cell)])
+
+
 def _extract_sheet_rows(xlsx_bytes):
     workbook = pd.ExcelFile(xlsx_bytes, engine="openpyxl")
     df = pd.read_excel(workbook, sheet_name=0, header=None, dtype=object, engine="openpyxl")
     return df.where(pd.notnull(df), None).values.tolist()
 
 
-def _row_text(row):
-    return " ".join([_cell_text(cell) for cell in row if _cell_text(cell)])
-
-
 def _find_table_start(rows):
     for row_index, row in enumerate(rows):
-        text = _row_text(row)
-        hit_count = sum(1 for keyword in TABLE_HEADER_KEYWORDS if keyword in text)
+        row_text = _row_text(row)
+        hit_count = sum(1 for keyword in TABLE_HEADER_KEYWORDS if keyword in row_text)
         if hit_count >= 4:
             return row_index
     return None
 
 
-def _find_column_index(headers, names):
-    for idx, header in enumerate(headers):
-        header_text = _cell_text(header)
-        for name in names:
-            if name in header_text:
-                return idx
+def _find_column_index(header_row, aliases):
+    for column_index, header_cell in enumerate(header_row):
+        header_text = _cell_text(header_cell)
+        for alias in aliases:
+            if alias in header_text:
+                return column_index
     return None
 
 
@@ -113,7 +113,6 @@ def _is_valid_order(order):
     product_name = _normalize_text(order.get("product_name", ""))
     quantity = _normalize_text(order.get("quantity", ""))
     weight = _normalize_text(order.get("weight", ""))
-
     meaningful_count = sum(
         1 for value in [order_number, material_code, product_name, quantity, weight] if value
     )
@@ -122,9 +121,9 @@ def _is_valid_order(order):
 
 def _parse_orders(rows, start_row):
     header_row = rows[start_row]
-    mapping = {
-        key: _find_column_index(header_row, aliases)
-        for key, aliases in HEADER_ALIASES.items()
+    column_mapping = {
+        field_name: _find_column_index(header_row, aliases)
+        for field_name, aliases in HEADER_ALIASES.items()
     }
 
     orders = []
@@ -135,8 +134,11 @@ def _parse_orders(rows, start_row):
             continue
 
         order = {}
-        for key, col_index in mapping.items():
-            order[key] = _cell_text(row[col_index]) if col_index is not None and col_index < len(row) else ""
+        for field_name, column_index in column_mapping.items():
+            if column_index is not None and column_index < len(row):
+                order[field_name] = _cell_text(row[column_index])
+            else:
+                order[field_name] = ""
 
         if _is_valid_order(order):
             orders.append(order)
@@ -146,30 +148,22 @@ def _parse_orders(rows, start_row):
     return orders
 
 
-def _find_label_value(rows, labels, min_row=0, max_row=None, col_offset=1, start_col=0):
-    upper_bound = len(rows) if max_row is None else min(max_row, len(rows))
-    for row_index in range(min_row, upper_bound):
+def _find_label_value(rows, labels, min_row=0, max_row=None, start_col=0, col_offset=1):
+    end_row = len(rows) if max_row is None else min(max_row, len(rows))
+    for row_index in range(min_row, end_row):
         row = rows[row_index]
         for col_index in range(start_col, len(row)):
-            cell = row[col_index]
-            cell_text = _cell_text(cell)
+            cell_text = _cell_text(row[col_index])
             if cell_text and any(label in cell_text for label in labels):
-                target_col = col_index + col_offset
-                if target_col < len(row):
-                    return _cell_text(row[target_col])
+                value_col = col_index + col_offset
+                if value_col < len(row):
+                    return _cell_text(row[value_col])
     return ""
 
 
-def _find_driver_section_row(rows):
+def _find_section_row(rows, keyword):
     for row_index, row in enumerate(rows):
-        if "司机车辆信息" in _row_text(row):
-            return row_index
-    return 0
-
-
-def _find_customer_section_row(rows):
-    for row_index, row in enumerate(rows):
-        if "客户信息" in _row_text(row):
+        if keyword in _row_text(row):
             return row_index
     return 0
 
@@ -179,22 +173,22 @@ def _parse_email_body_fields(mail_body):
     patterns = {
         "vehicle_number": r"(?:车牌|车牌号码)\s*[:：]?\s*([A-Z\u4e00-\u9fa50-9\-]+)",
         "driver_name": r"司机姓名\s*[:：]?\s*([^\s\r\n]+)",
-        "driver_phone": r"联系电话\s*[:：]?\s*([0-9\-]{7,20})",
-        "id_number": r"身份证号\s*[:：]?\s*([0-9Xx]{15,18})",
+        "driver_phone": r"司机.*?联系电话\s*[:：]?\s*([0-9\-]{7,20})",
+        "id_number": r"司机.*?身份证号\s*[:：]?\s*([0-9Xx]{15,18})",
         "escort_name": r"押运员姓名\s*[:：]?\s*([^\s\r\n]+)",
         "escort_phone": r"押运员联系电话\s*[:：]?\s*([0-9\-]{7,20})",
         "escort_id_number": r"押运人身份证号\s*[:：]?\s*([0-9Xx]{15,18})",
     }
-    result = {}
-    for key, pattern in patterns.items():
+    parsed = {}
+    for field_name, pattern in patterns.items():
         match = re.search(pattern, text)
         if match:
-            result[key] = match.group(1).strip()
-    return result
+            parsed[field_name] = match.group(1).strip()
+    return parsed
 
 
 def _build_customer_info(email_info, rows):
-    start_row = _find_customer_section_row(rows)
+    start_row = _find_section_row(rows, "客户信息")
     end_row = min(start_row + 8, len(rows))
     info = {
         "customer_company_name": _find_label_value(rows, ["公司名称"], min_row=start_row, max_row=end_row),
@@ -203,22 +197,20 @@ def _build_customer_info(email_info, rows):
         "customer_email": _find_label_value(rows, ["E-mail"], min_row=start_row, max_row=end_row),
         "customer_address": _find_label_value(rows, ["公司地址"], min_row=start_row, max_row=end_row),
     }
-    if not info["customer_company_name"]:
-        info["customer_company_name"] = _safe_get(email_info, "company_name", default="")
     return info
 
 
 def _build_driver_vehicle_info(rows, body_fields):
-    start_row = _find_driver_section_row(rows)
+    start_row = _find_section_row(rows, "司机车辆信息")
     end_row = min(start_row + 10, len(rows))
     info = {
         "vehicle_number": _find_label_value(rows, ["车牌号码"], min_row=start_row, max_row=end_row, start_col=5) or body_fields.get("vehicle_number", ""),
         "trailer_number": _find_label_value(rows, ["挂车号码"], min_row=start_row, max_row=end_row, start_col=5),
         "driver_name": _find_label_value(rows, ["司机姓名"], min_row=start_row, max_row=end_row, start_col=5) or body_fields.get("driver_name", ""),
-        "driver_phone": _find_label_value(rows, ["联系电话"], min_row=start_row + 3, max_row=start_row + 5, col_offset=1, start_col=5) or body_fields.get("driver_phone", ""),
+        "driver_phone": _find_label_value(rows, ["联系电话"], min_row=start_row + 3, max_row=start_row + 5, start_col=5) or body_fields.get("driver_phone", ""),
         "id_number": _find_label_value(rows, ["身份证号"], min_row=start_row + 4, max_row=start_row + 6, start_col=5) or body_fields.get("id_number", ""),
         "escort_name": _find_label_value(rows, ["押运员姓名"], min_row=start_row, max_row=end_row, start_col=5) or body_fields.get("escort_name", ""),
-        "escort_phone": _find_label_value(rows, ["联系电话"], min_row=start_row + 5, max_row=start_row + 7, col_offset=1, start_col=5) or body_fields.get("escort_phone", ""),
+        "escort_phone": _find_label_value(rows, ["联系电话"], min_row=start_row + 5, max_row=start_row + 7, start_col=5) or body_fields.get("escort_phone", ""),
         "escort_id_number": _find_label_value(rows, ["身份证号"], min_row=start_row + 6, max_row=start_row + 8, start_col=5) or body_fields.get("escort_id_number", ""),
     }
     return info
@@ -239,9 +231,9 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
         return data
 
     first_attachment = None
-    for item in attachments:
-        if isinstance(item, dict) and str(item.get("filename", "")).lower().endswith(".xlsx"):
-            first_attachment = item
+    for attachment in attachments:
+        if isinstance(attachment, dict) and str(attachment.get("filename", "")).lower().endswith(".xlsx"):
+            first_attachment = attachment
             break
 
     if not first_attachment:
@@ -251,8 +243,7 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     if not oss_url:
         raise ValueError("missing oss_url in attachment")
 
-    xlsx_bytes = _download_xlsx(oss_url)
-    rows = _extract_sheet_rows(xlsx_bytes)
+    rows = _extract_sheet_rows(_download_xlsx(oss_url))
     table_start = _find_table_start(rows)
     if table_start is None:
         raise ValueError("cannot find order table header")
@@ -262,7 +253,7 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     customer_info = _build_customer_info(email_info, rows)
     driver_vehicle_info = _build_driver_vehicle_info(rows, body_fields)
 
-    company_name = customer_info.get("customer_company_name") or _safe_get(email_info, "company_name", default="")
+    company_name = customer_info.get("customer_company_name", "")
     job_type = _safe_get(email_info, "job_type", default="")
     if not job_type and orders:
         job_type = _safe_get(orders[0], "source_job_type", default="")
