@@ -1,8 +1,12 @@
 import json
+import mimetypes
 import typing
+import uuid
 from datetime import datetime
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+import requests
 
 
 data = {
@@ -17,6 +21,7 @@ data = {
 APP_ID = "6a4cc7e9d2ad50b1555e4e42"
 API_KEY = "wrCjUmragft9mMJw3XbkWiP4gDiBaOcf1D16dAc8972DeCe3eF40fD05b32029c0"
 CREATE_URL = "https://api.jiandaoyun.com/api/v5/app/entry/data/create"
+UPLOAD_TOKEN_URL = "https://api.jiandaoyun.com/api/v5/app/entry/file/get_upload_token"
 EMAIL_LOG_ENTRY_ID = "6a5063eaac359ad34098cb12"
 OUTBOUND_ENTRY_ID = "6a5063312322f5b1acb33b32"
 INBOUND_ENTRY_ID = "6a5063a0c1568ac27f292489"
@@ -78,9 +83,82 @@ def _extract_created_id(response):
     return ""
 
 
-def _build_email_log_payload(email_info):
+def _get_upload_tokens(entry_id, transaction_id):
+    payload = {
+        "app_id": APP_ID,
+        "entry_id": entry_id,
+        "transaction_id": transaction_id
+    }
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+    response = requests.post(UPLOAD_TOKEN_URL, headers=headers, json=payload, timeout=60)
+    if response.status_code != 200:
+        raise Exception(f"get upload token failed: {response.status_code} {response.text}")
+    result = response.json()
+    return result.get("token_and_url_list", [])
+
+
+def _download_file_bytes(file_url):
+    response = requests.get(file_url, timeout=60)
+    if response.status_code != 200:
+        raise Exception(f"download attachment failed: {response.status_code}")
+    return response.content
+
+
+def _upload_single_file(upload_url, token, filename, file_bytes):
+    mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    headers = {
+        "Authorization": f"Bearer {API_KEY}"
+    }
+    files = {
+        "file": (filename, file_bytes, mime_type)
+    }
+    data_payload = {
+        "token": token
+    }
+    response = requests.post(upload_url, headers=headers, data=data_payload, files=files, timeout=120)
+    if response.status_code != 200:
+        raise Exception(f"upload attachment failed: {response.status_code} {response.text}")
+    result = response.json()
+    file_key = result.get("key", "")
+    if not file_key:
+        raise Exception(f"upload attachment missing key: {json.dumps(result, ensure_ascii=False)}")
+    return file_key
+
+
+def _upload_email_attachments(email_info):
+    attachments = email_info.get("attachments", []) or []
+    if not attachments:
+        return "", []
+
+    transaction_id = str(uuid.uuid4())
+    token_pool = []
+    file_keys = []
+
+    for index, item in enumerate(attachments):
+        if not isinstance(item, dict):
+            continue
+        if len(token_pool) <= index:
+            token_pool.extend(_get_upload_tokens(EMAIL_LOG_ENTRY_ID, transaction_id))
+        token_info = token_pool[index]
+        file_bytes = _download_file_bytes(_text_value(item.get("oss_url", "")))
+        file_key = _upload_single_file(
+            upload_url=token_info["url"],
+            token=token_info["token"],
+            filename=_text_value(item.get("filename", f"attachment_{index + 1}")),
+            file_bytes=file_bytes
+        )
+        file_keys.append(file_key)
+
+    return transaction_id, file_keys
+
+
+def _build_email_log_payload(email_info, transaction_id="", appendix_keys=None):
     attachments = email_info.get("attachments", []) or []
     attachment_rows = []
+    appendix_keys = appendix_keys or []
     for item in attachments:
         if not isinstance(item, dict):
             continue
@@ -100,6 +178,7 @@ def _build_email_log_payload(email_info):
         "entry_id": EMAIL_LOG_ENTRY_ID,
         "is_start_workflow": False,
         "is_start_trigger": False,
+        "transaction_id": transaction_id,
         "data": {
             "sender_id": _wrap(_safe_get(email_info, "from_", "from_email", default="")),
             "recipient_id": _wrap(_safe_get(email_info, "to", default="")),
@@ -113,6 +192,7 @@ def _build_email_log_payload(email_info):
             "subject": _wrap(_safe_get(email_info, "subject", default="")),
             "text_plain": _wrap(_text_value(email_info.get("text_plain", []))),
             "attachments": _wrap(attachment_rows),
+            "appendix": _wrap(appendix_keys),
         }
     }
 
@@ -179,9 +259,10 @@ def _build_order_payload(email_info, customer_info, driver_vehicle_info, source_
 
 
 def _write_email_log(email_info):
-    payload = _build_email_log_payload(email_info)
+    transaction_id, appendix_keys = _upload_email_attachments(email_info)
+    payload = _build_email_log_payload(email_info, transaction_id=transaction_id, appendix_keys=appendix_keys)
     response = _post_json(CREATE_URL, payload)
-    return payload, response
+    return payload, response, transaction_id, appendix_keys
 
 
 def _write_order_form(email_info, customer_info, driver_vehicle_info, source_order_info):
@@ -224,9 +305,11 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
         email_info["job_type"] = parsed_job_type
 
     try:
-        log_payload, log_response = _write_email_log(email_info)
+        log_payload, log_response, transaction_id, appendix_keys = _write_email_log(email_info)
         data["variables"]["email_log_payload"] = log_payload
         data["variables"]["email_log_response"] = log_response
+        data["variables"]["email_log_transaction_id"] = transaction_id
+        data["variables"]["email_log_appendix_keys"] = appendix_keys
         email_log_id = _extract_created_id(log_response)
         if not email_log_id:
             raise Exception(f"email log write did not return _id: {json.dumps(log_response, ensure_ascii=False)}")
@@ -254,6 +337,7 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
             {
                 "email_log_written": True,
                 "email_log_id": email_log_id,
+                "appendix_count": len(appendix_keys),
                 "order_form_type": order_kind or "",
                 "order_written": bool(order_form_id),
                 "order_form_id": order_form_id,
