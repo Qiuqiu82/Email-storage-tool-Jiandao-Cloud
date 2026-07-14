@@ -29,6 +29,8 @@ EMAIL_CENTER_ENTRY_ID = "6a548fa8477084704dc780ef"
 OUTBOUND_ENTRY_ID = "6a5063312322f5b1acb33b32"
 INBOUND_ENTRY_ID = "6a5063a0c1568ac27f292489"
 SERIAL_FIELD_ID = "_widget_1783653197823"
+OUTBOUND_CENTER_MAIN_EMAIL_FIELD = "_widget_1784008748955"
+INBOUND_CENTER_MAIN_EMAIL_FIELD = "_widget_1784014377455"
 
 
 def _new_data():
@@ -176,10 +178,11 @@ def _upload_email_attachments(email_info, entry_id):
     return transaction_id, file_keys
 
 
-def _build_mail_form_data(email_info, appendix_keys=None):
+def _build_mail_form_data(email_info, appendix_keys=None, extra_fields=None):
     attachments = email_info.get("attachments", []) or []
     attachment_rows = []
     appendix_keys = appendix_keys or []
+    extra_fields = extra_fields or {}
     for item in attachments:
         if not isinstance(item, dict):
             continue
@@ -194,7 +197,7 @@ def _build_mail_form_data(email_info, appendix_keys=None):
             "content_transfer_encoding": _wrap(_text_value(item.get("content_transfer_encoding", ""))),
         })
 
-    return {
+    payload = {
         "sender_id": _wrap(_safe_get(email_info, "from_", "from_email", default="")),
         "recipient_id": _wrap(_safe_get(email_info, "to", default="")),
         "cc": _wrap(_safe_get(email_info, "cc", default="")),
@@ -209,6 +212,8 @@ def _build_mail_form_data(email_info, appendix_keys=None):
         "attachments": _wrap(attachment_rows),
         "appendix": _wrap(appendix_keys),
     }
+    payload.update(extra_fields)
+    return payload
 
 
 def _build_create_payload(entry_id, data_payload, transaction_id=""):
@@ -246,64 +251,87 @@ def _generate_serial_number(email_info):
     return datetime.now().strftime("%H%M%S")[-5:]
 
 
-def _build_order_payload(email_info, customer_info, driver_vehicle_info, source_order_info, entry_id, main_email_field):
+def _build_order_payload(
+    email_info,
+    customer_info,
+    driver_vehicle_info,
+    source_order_info,
+    entry_id,
+    main_email_field,
+    email_center_id="",
+    center_main_email_fill_field=""
+):
     customer_row = (customer_info or [{}])[0]
     vehicle_row = (driver_vehicle_info or [{}])[0]
     serial_number = _generate_serial_number(email_info)
+
+    data_payload = {
+        SERIAL_FIELD_ID: _wrap(serial_number),
+        "company_name": _wrap(_safe_get(email_info, "company_name", default="")),
+        "job_type": _wrap(_safe_get(email_info, "job_type", default="")),
+        "message_id": _wrap(_safe_get(email_info, "message_id", default="")),
+        main_email_field: _wrap(_safe_get(email_info, "main_email_id", default="")),
+        "customer_info": _wrap([{
+            "customer_company_name": _wrap(_safe_get(customer_row, "customer_company_name", default="")),
+            "customer_contact_name": _wrap(_safe_get(customer_row, "customer_contact_name", default="")),
+            "customer_phone": _wrap(_safe_get(customer_row, "customer_phone", default="")),
+            "customer_email": _wrap(_safe_get(customer_row, "customer_email", default="")),
+            "customer_address": _wrap(_safe_get(customer_row, "customer_address", default="")),
+        }]),
+        "driver_vehicle_info": _wrap([{
+            "vehicle_number": _wrap(_safe_get(vehicle_row, "vehicle_number", default="")),
+            "trailer_number": _wrap(_safe_get(vehicle_row, "trailer_number", default="")),
+            "driver_name": _wrap(_safe_get(vehicle_row, "driver_name", default="")),
+            "driver_phone": _wrap(_safe_get(vehicle_row, "driver_phone", default="")),
+            "id_number": _wrap(_safe_get(vehicle_row, "id_number", default="")),
+            "escort_name": _wrap(_safe_get(vehicle_row, "escort_name", default="")),
+            "escort_phone": _wrap(_safe_get(vehicle_row, "escort_phone", default="")),
+            "escort_id_number": _wrap(_safe_get(vehicle_row, "escort_id_number", default="")),
+        }]),
+        "source_order_info": _wrap([{
+            "shipper_name": _wrap(_safe_get(item, "shipper_name", default="")),
+            "source_job_type": _wrap(_safe_get(item, "source_job_type", default="")),
+            "job_date": _wrap(_safe_get(item, "job_date", default="")),
+            "job_time": _wrap(_safe_get(item, "job_time", default="")),
+            "job_code": _wrap(_safe_get(item, "job_code", default="")),
+            "order_number": _wrap(_safe_get(item, "order_number", default="")),
+            "material_code": _wrap(_safe_get(item, "material_code", default="")),
+            "product_name": _wrap(_safe_get(item, "product_name", default="")),
+            "batch_number": _wrap(_safe_get(item, "batch_number", default="")),
+            "unit": _wrap(_safe_get(item, "unit", default="")),
+            "quantity": _wrap(_safe_get(item, "quantity", default="")),
+            "status": _wrap(_safe_get(item, "status", default="")),
+            "specification": _wrap(_safe_get(item, "specification", default="")),
+            "weight": _wrap(_safe_get(item, "weight", default="")),
+        } for item in (source_order_info or [])]),
+    }
+
+    if email_center_id:
+        data_payload["email_center_ref"] = _wrap(email_center_id)
+    if center_main_email_fill_field:
+        data_payload[center_main_email_fill_field] = _wrap(_safe_get(email_info, "main_email_id", default=""))
 
     return {
         "app_id": APP_ID,
         "entry_id": entry_id,
         "is_start_workflow": False,
         "is_start_trigger": False,
-        "data": {
-            SERIAL_FIELD_ID: _wrap(serial_number),
-            "company_name": _wrap(_safe_get(email_info, "company_name", default="")),
-            "job_type": _wrap(_safe_get(email_info, "job_type", default="")),
-            "message_id": _wrap(_safe_get(email_info, "message_id", default="")),
-            main_email_field: _wrap(_safe_get(email_info, "main_email_id", default="")),
-            "customer_info": _wrap([{
-                "customer_company_name": _wrap(_safe_get(customer_row, "customer_company_name", default="")),
-                "customer_contact_name": _wrap(_safe_get(customer_row, "customer_contact_name", default="")),
-                "customer_phone": _wrap(_safe_get(customer_row, "customer_phone", default="")),
-                "customer_email": _wrap(_safe_get(customer_row, "customer_email", default="")),
-                "customer_address": _wrap(_safe_get(customer_row, "customer_address", default="")),
-            }]),
-            "driver_vehicle_info": _wrap([{
-                "vehicle_number": _wrap(_safe_get(vehicle_row, "vehicle_number", default="")),
-                "trailer_number": _wrap(_safe_get(vehicle_row, "trailer_number", default="")),
-                "driver_name": _wrap(_safe_get(vehicle_row, "driver_name", default="")),
-                "driver_phone": _wrap(_safe_get(vehicle_row, "driver_phone", default="")),
-                "id_number": _wrap(_safe_get(vehicle_row, "id_number", default="")),
-                "escort_name": _wrap(_safe_get(vehicle_row, "escort_name", default="")),
-                "escort_phone": _wrap(_safe_get(vehicle_row, "escort_phone", default="")),
-                "escort_id_number": _wrap(_safe_get(vehicle_row, "escort_id_number", default="")),
-            }]),
-            "source_order_info": _wrap([{
-                "shipper_name": _wrap(_safe_get(item, "shipper_name", default="")),
-                "source_job_type": _wrap(_safe_get(item, "source_job_type", default="")),
-                "job_date": _wrap(_safe_get(item, "job_date", default="")),
-                "job_time": _wrap(_safe_get(item, "job_time", default="")),
-                "job_code": _wrap(_safe_get(item, "job_code", default="")),
-                "order_number": _wrap(_safe_get(item, "order_number", default="")),
-                "material_code": _wrap(_safe_get(item, "material_code", default="")),
-                "product_name": _wrap(_safe_get(item, "product_name", default="")),
-                "batch_number": _wrap(_safe_get(item, "batch_number", default="")),
-                "unit": _wrap(_safe_get(item, "unit", default="")),
-                "quantity": _wrap(_safe_get(item, "quantity", default="")),
-                "status": _wrap(_safe_get(item, "status", default="")),
-                "specification": _wrap(_safe_get(item, "specification", default="")),
-                "weight": _wrap(_safe_get(item, "weight", default="")),
-            } for item in (source_order_info or [])]),
-        }
+        "data": data_payload
     }
 
 
-def _write_email_log(email_info):
+def _write_email_log(email_info, email_center_id=""):
     transaction_id, appendix_keys = _upload_email_attachments(email_info, EMAIL_LOG_ENTRY_ID)
+    extra_fields = {}
+    if email_center_id:
+        extra_fields["email_center_ref"] = _wrap(email_center_id)
     payload = _build_create_payload(
         EMAIL_LOG_ENTRY_ID,
-        _build_mail_form_data(email_info, appendix_keys=appendix_keys),
+        _build_mail_form_data(
+            email_info,
+            appendix_keys=appendix_keys,
+            extra_fields=extra_fields
+        ),
         transaction_id=transaction_id
     )
     response = _post_json(CREATE_URL, payload)
@@ -365,7 +393,7 @@ def _write_email_center(email_info):
     return payload, response, transaction_id, appendix_keys, existing_id, mode
 
 
-def _write_order_form(email_info, customer_info, driver_vehicle_info, source_order_info):
+def _write_order_form(email_info, customer_info, driver_vehicle_info, source_order_info, email_center_id=""):
     job_type = _safe_get(email_info, "job_type", default="")
     if job_type not in ("入库", "出库"):
         return None, None, None
@@ -373,9 +401,11 @@ def _write_order_form(email_info, customer_info, driver_vehicle_info, source_ord
     if job_type == "出库":
         entry_id = OUTBOUND_ENTRY_ID
         main_email_field = "main_email_id"
+        center_main_email_fill_field = OUTBOUND_CENTER_MAIN_EMAIL_FIELD
     else:
         entry_id = INBOUND_ENTRY_ID
         main_email_field = "rmain_email_id"
+        center_main_email_fill_field = INBOUND_CENTER_MAIN_EMAIL_FIELD
 
     payload = _build_order_payload(
         email_info=email_info,
@@ -384,6 +414,8 @@ def _write_order_form(email_info, customer_info, driver_vehicle_info, source_ord
         source_order_info=source_order_info,
         entry_id=entry_id,
         main_email_field=main_email_field,
+        email_center_id=email_center_id,
+        center_main_email_fill_field=center_main_email_fill_field,
     )
     response = _post_json(CREATE_URL, payload)
     return job_type, payload, response
@@ -405,16 +437,6 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
         email_info["job_type"] = parsed_job_type
 
     try:
-        log_payload, log_response, transaction_id, appendix_keys = _write_email_log(email_info)
-        data["variables"]["email_log_payload"] = log_payload
-        data["variables"]["email_log_response"] = log_response
-        data["variables"]["email_log_transaction_id"] = transaction_id
-        data["variables"]["email_log_appendix_keys"] = appendix_keys
-        email_log_id = _extract_created_id(log_response)
-        if not email_log_id:
-            raise Exception(f"email log write did not return _id: {json.dumps(log_response, ensure_ascii=False)}")
-        data["variables"]["email_log_id"] = email_log_id
-
         center_payload, center_response, center_transaction_id, center_appendix_keys, existing_center_id, center_mode = _write_email_center(email_info)
         if center_payload:
             data["variables"]["email_center_payload"] = center_payload
@@ -430,11 +452,25 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
             email_center_id = ""
             center_mode = ""
 
+        log_payload, log_response, transaction_id, appendix_keys = _write_email_log(
+            email_info,
+            email_center_id=email_center_id
+        )
+        data["variables"]["email_log_payload"] = log_payload
+        data["variables"]["email_log_response"] = log_response
+        data["variables"]["email_log_transaction_id"] = transaction_id
+        data["variables"]["email_log_appendix_keys"] = appendix_keys
+        email_log_id = _extract_created_id(log_response)
+        if not email_log_id:
+            raise Exception(f"email log write did not return _id: {json.dumps(log_response, ensure_ascii=False)}")
+        data["variables"]["email_log_id"] = email_log_id
+
         order_kind, order_payload, order_response = _write_order_form(
             email_info=email_info,
             customer_info=customer_info,
             driver_vehicle_info=driver_vehicle_info,
             source_order_info=source_order_info,
+            email_center_id=email_center_id,
         )
         order_form_id = ""
         if order_payload:
