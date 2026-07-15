@@ -253,7 +253,18 @@ def _name_contains(left, right):
 
 
 def _spec_equal(left, right):
-    return _text(left).replace(" ", "").lower() == _text(right).replace(" ", "").lower()
+    return _normalize_spec(left) == _normalize_spec(right)
+
+
+def _normalize_spec(value):
+    text = _text(value).replace(" ", "").upper()
+    if not text:
+        return ""
+    numbers = re.findall(r"\d+(?:\.\d+)?", text)
+    if numbers:
+        normalized = numbers[-1].rstrip("0").rstrip(".")
+        return normalized or "0"
+    return text
 
 
 def _check_material_exact(order, stock_rows):
