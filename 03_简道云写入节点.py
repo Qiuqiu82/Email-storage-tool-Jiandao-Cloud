@@ -430,6 +430,9 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     source_order_info = variables.get("source_order_info", []) or []
     validation_pass = variables.get("validation_pass", None)
     validation_message = variables.get("validation_message", "")
+    validation_errors = variables.get("validation_errors", [])
+    stock_check_debug = variables.get("stock_check_debug", [])
+    matched_owner_strategy = variables.get("matched_owner_strategy", {})
 
     parsed_company_name = variables.get("company_name", "")
     parsed_job_type = variables.get("job_type", "")
@@ -501,6 +504,9 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
                 "email_center_mode": center_mode,
                 "validation_pass": validation_pass,
                 "validation_message": validation_message,
+                "validation_errors": validation_errors,
+                "matched_owner_strategy": matched_owner_strategy,
+                "stock_check_debug": stock_check_debug,
                 "order_form_type": order_kind or "",
                 "order_written": bool(order_form_id),
                 "order_form_id": order_form_id,

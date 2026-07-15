@@ -194,6 +194,25 @@ def _extract_stock_rows(response_json):
     return []
 
 
+def _sample_rows(rows, limit=5):
+    sample = []
+    for row in rows[:limit]:
+        sample.append({
+            "customerid": _safe_get(row, "customerid", default=""),
+            "sku": _safe_get(row, "sku", default=""),
+            "skuname": _safe_get(row, "skuname", default=""),
+            "skunamecn": _safe_get(row, "skunamecn", default=""),
+            "skuspec": _safe_get(row, "skuspec", default=""),
+            "lotatt04": _safe_get(row, "lotatt04", default=""),
+            "lotatt06": _safe_get(row, "lotatt06", default=""),
+            "qty": _safe_get(row, "qty", default=""),
+            "unallocatedqty": _safe_get(row, "unallocatedqty", default=""),
+            "weight": _safe_get(row, "weight", default=""),
+            "unit": _safe_get(row, "unit", default=""),
+        })
+    return sample
+
+
 def _query_stock(unit, department_code, sku="", lotatt04=""):
     payload = {
         "unit": unit or "普工路仓库",
@@ -209,13 +228,21 @@ def _query_stock(unit, department_code, sku="", lotatt04=""):
         json=payload,
         timeout=60
     )
+    debug = {
+        "request_payload": payload,
+        "status_code": response.status_code,
+        "response_text_preview": response.text[:1000],
+    }
     if response.status_code != 200:
         raise Exception(f"库存接口查询失败：{response.status_code} {response.text}")
     try:
         response_json = response.json()
     except Exception as exc:
         raise Exception(f"库存接口返回非JSON：{response.text[:200]}") from exc
-    return _extract_stock_rows(response_json)
+    rows = _extract_stock_rows(response_json)
+    debug["row_count"] = len(rows)
+    debug["sample_rows"] = _sample_rows(rows)
+    return rows, debug
 
 
 def _name_contains(left, right):
@@ -246,16 +273,17 @@ def _check_name_contains_spec_exact(order, stock_rows):
 
 def _check_strategy(config_row, job_type, orders):
     errors = []
+    stock_debug = []
     strategy_names = _strategy_names(config_row, job_type)
     if not strategy_names:
         errors.append(f"未配置{job_type}策略")
-        return errors, []
+        return errors, [], stock_debug
 
     unit = _safe_get(config_row, "associated_warehouse", default="普工路仓库")
     department_code = _safe_get(config_row, "department_code", default="")
     if not department_code:
         errors.append("策略配置缺少部门代码，无法查询仓库库存数据")
-        return errors, strategy_names
+        return errors, strategy_names, stock_debug
 
     cache = {}
     for row_index, order in enumerate(orders, start=1):
@@ -265,19 +293,48 @@ def _check_strategy(config_row, job_type, orders):
 
         for strategy_name in strategy_names:
             try:
+                debug_item = None
                 if "物料号完全匹配" in strategy_name:
                     cache_key = ("sku", material_code)
                     if cache_key not in cache:
-                        cache[cache_key] = _query_stock(unit, department_code, sku=material_code)
-                    if _check_material_exact(order, cache[cache_key]):
+                        rows, query_debug = _query_stock(unit, department_code, sku=material_code)
+                        cache[cache_key] = rows
+                        query_debug.update({
+                            "order_row_index": row_index,
+                            "strategy_name": strategy_name,
+                            "order_number": _safe_get(order, "order_number", default=""),
+                            "material_code": material_code,
+                            "product_name": _safe_get(order, "product_name", default=""),
+                            "specification": _safe_get(order, "specification", default=""),
+                        })
+                        stock_debug.append(query_debug)
+                        debug_item = query_debug
+                    matched = _check_material_exact(order, cache[cache_key])
+                    if debug_item is not None:
+                        debug_item["matched"] = matched
+                    if matched:
                         row_passed = True
                         break
                     row_reasons.append("物料号未在仓库数据中完全匹配")
                 elif "品名" in strategy_name and "规格" in strategy_name:
                     cache_key = ("owner", department_code)
                     if cache_key not in cache:
-                        cache[cache_key] = _query_stock(unit, department_code)
-                    if _check_name_contains_spec_exact(order, cache[cache_key]):
+                        rows, query_debug = _query_stock(unit, department_code)
+                        cache[cache_key] = rows
+                        query_debug.update({
+                            "order_row_index": row_index,
+                            "strategy_name": strategy_name,
+                            "order_number": _safe_get(order, "order_number", default=""),
+                            "material_code": material_code,
+                            "product_name": _safe_get(order, "product_name", default=""),
+                            "specification": _safe_get(order, "specification", default=""),
+                        })
+                        stock_debug.append(query_debug)
+                        debug_item = query_debug
+                    matched = _check_name_contains_spec_exact(order, cache[cache_key])
+                    if debug_item is not None:
+                        debug_item["matched"] = matched
+                    if matched:
                         row_passed = True
                         break
                     row_reasons.append("品名包含关系或规格完全匹配不成立")
@@ -291,7 +348,7 @@ def _check_strategy(config_row, job_type, orders):
             material = _safe_get(order, "material_code", default="-")
             errors.append(f"第{row_index}行校验失败，订单号{order_no}，物料号{material}：{'；'.join(row_reasons)}")
 
-    return errors, strategy_names
+    return errors, strategy_names, stock_debug
 
 
 def main(*args, tool_args: dict, **kwargs) -> typing.Any:
@@ -304,6 +361,7 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     errors = []
     config_row = {}
     strategy_names = []
+    stock_check_debug = []
 
     try:
         if not orders:
@@ -320,7 +378,7 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
 
         if not errors and config_row:
             errors.extend(_check_required_fields(config_row, orders))
-            strategy_errors, strategy_names = _check_strategy(config_row, job_type, orders)
+            strategy_errors, strategy_names, stock_check_debug = _check_strategy(config_row, job_type, orders)
             errors.extend(strategy_errors)
 
         validation_pass = not errors
@@ -329,6 +387,7 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
         data["variables"]["validation_pass"] = validation_pass
         data["variables"]["validation_message"] = message
         data["variables"]["validation_errors"] = errors
+        data["variables"]["stock_check_debug"] = stock_check_debug
         data["variables"]["matched_owner_strategy"] = {
             "cargo_owner_name": _safe_get(config_row, "cargo_owner_name", default=""),
             "department_code": _safe_get(config_row, "department_code", default=""),
@@ -343,6 +402,8 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
                 "validation_pass": validation_pass,
                 "validation_message": message,
                 "strategy_names": strategy_names,
+                "matched_owner_strategy": data["variables"]["matched_owner_strategy"],
+                "stock_check_debug": stock_check_debug,
             },
             ensure_ascii=False
         )
@@ -352,6 +413,7 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
         data["variables"]["validation_pass"] = False
         data["variables"]["validation_message"] = message
         data["variables"]["validation_errors"] = [str(exc)]
+        data["variables"]["stock_check_debug"] = []
         data["result.success"] = True
         data["result.inference"] = True
         data["result"] = json.dumps(
