@@ -442,33 +442,45 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
         email_info["job_type"] = parsed_job_type
 
     try:
-        center_payload, center_response, center_transaction_id, center_appendix_keys, existing_center_id, center_mode = _write_email_center(email_info)
-        if center_payload:
-            data["variables"]["email_center_payload"] = center_payload
-            data["variables"]["email_center_response"] = center_response
-            data["variables"]["email_center_transaction_id"] = center_transaction_id
-            data["variables"]["email_center_appendix_keys"] = center_appendix_keys
-            data["variables"]["email_center_mode"] = center_mode
-            email_center_id = _extract_data_id(center_response, fallback=existing_center_id)
-            if not email_center_id:
-                raise Exception(f"email center write did not return _id: {json.dumps(center_response, ensure_ascii=False)}")
-            data["variables"]["email_center_id"] = email_center_id
-        else:
-            email_center_id = ""
-            center_mode = ""
+        email_center_id = ""
+        center_mode = ""
+        email_center_error = ""
+        email_log_id = ""
+        email_log_error = ""
+        appendix_keys = []
 
-        log_payload, log_response, transaction_id, appendix_keys = _write_email_log(
-            email_info,
-            email_center_id=email_center_id
-        )
-        data["variables"]["email_log_payload"] = log_payload
-        data["variables"]["email_log_response"] = log_response
-        data["variables"]["email_log_transaction_id"] = transaction_id
-        data["variables"]["email_log_appendix_keys"] = appendix_keys
-        email_log_id = _extract_created_id(log_response)
-        if not email_log_id:
-            raise Exception(f"email log write did not return _id: {json.dumps(log_response, ensure_ascii=False)}")
-        data["variables"]["email_log_id"] = email_log_id
+        try:
+            center_payload, center_response, center_transaction_id, center_appendix_keys, existing_center_id, center_mode = _write_email_center(email_info)
+            if center_payload:
+                data["variables"]["email_center_payload"] = center_payload
+                data["variables"]["email_center_response"] = center_response
+                data["variables"]["email_center_transaction_id"] = center_transaction_id
+                data["variables"]["email_center_appendix_keys"] = center_appendix_keys
+                data["variables"]["email_center_mode"] = center_mode
+                email_center_id = _extract_data_id(center_response, fallback=existing_center_id)
+                if not email_center_id:
+                    raise Exception(f"email center write did not return _id: {json.dumps(center_response, ensure_ascii=False)}")
+                data["variables"]["email_center_id"] = email_center_id
+        except Exception as exc:
+            email_center_error = str(exc)
+            data["variables"]["email_center_error"] = email_center_error
+
+        try:
+            log_payload, log_response, transaction_id, appendix_keys = _write_email_log(
+                email_info,
+                email_center_id=email_center_id
+            )
+            data["variables"]["email_log_payload"] = log_payload
+            data["variables"]["email_log_response"] = log_response
+            data["variables"]["email_log_transaction_id"] = transaction_id
+            data["variables"]["email_log_appendix_keys"] = appendix_keys
+            email_log_id = _extract_created_id(log_response)
+            if not email_log_id:
+                raise Exception(f"email log write did not return _id: {json.dumps(log_response, ensure_ascii=False)}")
+            data["variables"]["email_log_id"] = email_log_id
+        except Exception as exc:
+            email_log_error = str(exc)
+            data["variables"]["email_log_error"] = email_log_error
 
         if validation_pass is False:
             order_kind, order_payload, order_response = None, None, None
@@ -496,12 +508,14 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
         data["result.inference"] = True
         data["result"] = json.dumps(
             {
-                "email_log_written": True,
+                "email_log_written": bool(email_log_id),
                 "email_log_id": email_log_id,
+                "email_log_error": email_log_error,
                 "appendix_count": len(appendix_keys),
                 "email_center_written": bool(email_center_id),
                 "email_center_id": email_center_id,
                 "email_center_mode": center_mode,
+                "email_center_error": email_center_error,
                 "validation_pass": validation_pass,
                 "validation_message": validation_message,
                 "validation_errors": validation_errors,
