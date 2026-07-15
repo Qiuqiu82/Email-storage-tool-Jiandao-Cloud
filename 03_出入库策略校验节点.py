@@ -176,6 +176,7 @@ def _extract_stock_rows(response_json):
     if isinstance(response_json, dict):
         candidates.extend([
             response_json.get("data"),
+            response_json.get("output"),
             response_json.get("rows"),
             response_json.get("list"),
             response_json.get("result"),
@@ -187,7 +188,7 @@ def _extract_stock_rows(response_json):
         if isinstance(item, list):
             return [row for row in item if isinstance(row, dict)]
         if isinstance(item, dict):
-            for key in ("data", "rows", "list", "records", "items"):
+            for key in ("data", "output", "rows", "list", "records", "items"):
                 nested = item.get(key)
                 if isinstance(nested, list):
                     return [row for row in nested if isinstance(row, dict)]
