@@ -428,6 +428,8 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     customer_info = variables.get("customer_info", []) or []
     driver_vehicle_info = variables.get("driver_vehicle_info", []) or []
     source_order_info = variables.get("source_order_info", []) or []
+    validation_pass = variables.get("validation_pass", None)
+    validation_message = variables.get("validation_message", "")
 
     parsed_company_name = variables.get("company_name", "")
     parsed_job_type = variables.get("job_type", "")
@@ -465,13 +467,18 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
             raise Exception(f"email log write did not return _id: {json.dumps(log_response, ensure_ascii=False)}")
         data["variables"]["email_log_id"] = email_log_id
 
-        order_kind, order_payload, order_response = _write_order_form(
-            email_info=email_info,
-            customer_info=customer_info,
-            driver_vehicle_info=driver_vehicle_info,
-            source_order_info=source_order_info,
-            email_center_id=email_center_id,
-        )
+        if validation_pass is False:
+            order_kind, order_payload, order_response = None, None, None
+            data["variables"]["order_write_skipped"] = True
+            data["variables"]["order_write_skip_reason"] = validation_message
+        else:
+            order_kind, order_payload, order_response = _write_order_form(
+                email_info=email_info,
+                customer_info=customer_info,
+                driver_vehicle_info=driver_vehicle_info,
+                source_order_info=source_order_info,
+                email_center_id=email_center_id,
+            )
         order_form_id = ""
         if order_payload:
             data["variables"]["order_payload"] = order_payload
@@ -492,6 +499,8 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
                 "email_center_written": bool(email_center_id),
                 "email_center_id": email_center_id,
                 "email_center_mode": center_mode,
+                "validation_pass": validation_pass,
+                "validation_message": validation_message,
                 "order_form_type": order_kind or "",
                 "order_written": bool(order_form_id),
                 "order_form_id": order_form_id,
