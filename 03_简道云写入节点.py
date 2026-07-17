@@ -433,6 +433,9 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     validation_errors = variables.get("validation_errors", [])
     stock_check_debug = variables.get("stock_check_debug", [])
     matched_owner_strategy = variables.get("matched_owner_strategy", {})
+    mail_intent = variables.get("mail_intent", "")
+    is_inoutbound_mail = variables.get("is_inoutbound_mail", None)
+    fixed_reply_message = variables.get("fixed_reply_message", "")
 
     parsed_company_name = variables.get("company_name", "")
     parsed_job_type = variables.get("job_type", "")
@@ -482,7 +485,13 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
             email_log_error = str(exc)
             data["variables"]["email_log_error"] = email_log_error
 
-        if validation_pass is False:
+        is_other_mail = mail_intent == "其他" or is_inoutbound_mail is False
+
+        if is_other_mail:
+            order_kind, order_payload, order_response = None, None, None
+            data["variables"]["order_write_skipped"] = True
+            data["variables"]["order_write_skip_reason"] = "邮件意图不是出入库"
+        elif validation_pass is False:
             order_kind, order_payload, order_response = None, None, None
             data["variables"]["order_write_skipped"] = True
             data["variables"]["order_write_skip_reason"] = validation_message
@@ -504,29 +513,55 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
                 raise Exception(f"order form write did not return _id: {json.dumps(order_response, ensure_ascii=False)}")
             data["variables"]["order_form_id"] = order_form_id
 
+        if is_other_mail:
+            reply_message = fixed_reply_message or (
+                "您好，您的邮件已收到。当前邮件内容不属于出入库任务单处理范围，"
+                "系统暂不生成入库单或出库单。如需处理出入库业务，请发送包含出入库任务单附件的邮件。"
+            )
+        elif validation_pass is False:
+            error_lines = validation_errors or [validation_message or "未通过必填字段或出入库策略校验"]
+            reply_message = (
+                "您好，您发送的出入库任务单已收到，邮件记录也已保存，"
+                "但由于以下原因，暂未生成入库单/出库单：\n\n"
+                + "\n".join([f"{index}. {error}" for index, error in enumerate(error_lines, start=1)])
+                + "\n\n请修改附件中的相关数据后重新发送。"
+            )
+        elif order_form_id:
+            reply_message = (
+                f"您好，您的{order_kind or '出入库'}任务单已校验通过并成功写入，"
+                "邮件记录也已保存。"
+            )
+        else:
+            reply_message = "您好，邮件已收到，邮件记录已保存，但未识别到有效的入库或出库任务单。"
+
+        if email_center_error or email_log_error:
+            reply_message += "\n\n邮件留痕提示：邮件中心或邮件日志写入存在异常，请联系管理员检查。"
+
+        write_summary = {
+            "mail_intent": mail_intent,
+            "is_inoutbound_mail": is_inoutbound_mail,
+            "email_log_written": bool(email_log_id),
+            "email_log_id": email_log_id,
+            "email_log_error": email_log_error,
+            "appendix_count": len(appendix_keys),
+            "email_center_written": bool(email_center_id),
+            "email_center_id": email_center_id,
+            "email_center_mode": center_mode,
+            "email_center_error": email_center_error,
+            "validation_pass": validation_pass,
+            "validation_message": validation_message,
+            "validation_errors": validation_errors,
+            "matched_owner_strategy": matched_owner_strategy,
+            "stock_check_debug": stock_check_debug,
+            "order_form_type": order_kind or "",
+            "order_written": bool(order_form_id),
+            "order_form_id": order_form_id,
+        }
+        data["variables"]["reply_message"] = reply_message
+        data["variables"]["write_summary"] = write_summary
         data["result.success"] = True
         data["result.inference"] = True
-        data["result"] = json.dumps(
-            {
-                "email_log_written": bool(email_log_id),
-                "email_log_id": email_log_id,
-                "email_log_error": email_log_error,
-                "appendix_count": len(appendix_keys),
-                "email_center_written": bool(email_center_id),
-                "email_center_id": email_center_id,
-                "email_center_mode": center_mode,
-                "email_center_error": email_center_error,
-                "validation_pass": validation_pass,
-                "validation_message": validation_message,
-                "validation_errors": validation_errors,
-                "matched_owner_strategy": matched_owner_strategy,
-                "stock_check_debug": stock_check_debug,
-                "order_form_type": order_kind or "",
-                "order_written": bool(order_form_id),
-                "order_form_id": order_form_id,
-            },
-            ensure_ascii=False
-        )
+        data["result"] = reply_message
         return data
     except Exception as exc:
         data["result.success"] = False

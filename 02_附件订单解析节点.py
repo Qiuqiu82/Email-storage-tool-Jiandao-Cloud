@@ -3,9 +3,6 @@ import re
 import typing
 from io import BytesIO
 
-import pandas as pd
-import requests
-
 
 data = {
     "result": "",
@@ -61,6 +58,8 @@ def _normalize_text(value):
 
 
 def _download_xlsx(oss_url):
+    import requests
+
     response = requests.get(oss_url, timeout=60)
     if response.status_code != 200:
         raise Exception(f"download file failed: {response.status_code}")
@@ -83,9 +82,11 @@ def _row_text(row):
 
 
 def _extract_sheet_rows(xlsx_bytes):
-    workbook = pd.ExcelFile(xlsx_bytes, engine="openpyxl")
-    df = pd.read_excel(workbook, sheet_name=0, header=None, dtype=object, engine="openpyxl")
-    return df.where(pd.notnull(df), None).values.tolist()
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(xlsx_bytes, data_only=True, read_only=True)
+    worksheet = workbook.worksheets[0]
+    return [list(row) for row in worksheet.iter_rows(values_only=True)]
 
 
 def _find_table_start(rows):
@@ -218,8 +219,22 @@ def _build_driver_vehicle_info(rows, body_fields):
 
 def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     data = _new_data()
-    email_info = kwargs.get("variables", {}).get("email_info", {}) or {}
+    variables = kwargs.get("variables", {}) or {}
+    email_info = variables.get("email_info", {}) or {}
     attachments = email_info.get("attachments", []) or []
+
+    if variables.get("is_inoutbound_mail") is False or variables.get("mail_intent") == "其他":
+        data["result.success"] = True
+        data["result.inference"] = True
+        data["result"] = "邮件意图不是出入库，已跳过附件订单解析"
+        data["variables"]["source_order_info"] = []
+        data["variables"]["customer_info"] = []
+        data["variables"]["driver_vehicle_info"] = []
+        data["variables"]["company_name"] = ""
+        data["variables"]["job_type"] = ""
+        data["variables"]["attachment_filename"] = ""
+        data["variables"]["attachment_oss_url"] = ""
+        return data
 
     if not attachments:
         data["result.success"] = True

@@ -1,0 +1,1153 @@
+<!doctype html>
+<html lang='zh-CN'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>AI 代码变更 Diff 理解报告</title>
+<style>
+
+:root {
+  --bg: #f6f8fa;
+  --panel: #ffffff;
+  --border: #d8dee4;
+  --text: #24292f;
+  --muted: #57606a;
+  --add-bg: #dafbe1;
+  --del-bg: #ffebe9;
+  --code-bg: #f6f8fa;
+  --note-bg: #fff8c5;
+  --note-border: #eac54f;
+  --blue: #0969da;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+header, main { max-width: 1320px; margin: 0 auto; padding: 20px; }
+h1 { margin: 0 0 8px; font-size: 26px; }
+h2 { margin: 24px 0 10px; font-size: 20px; }
+h3 { margin: 0 0 8px; font-size: 15px; }
+code, pre, .code { font-family: Consolas, "Cascadia Mono", "Courier New", monospace; }
+.muted { color: var(--muted); }
+.repo { margin: 8px 0 0; }
+.big { font-size: 16px; font-weight: 600; }
+.summary, .file-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.summary-grid, .grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.steps, .stat {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  background: #fbfbfc;
+}
+.steps ol { margin: 6px 0 0 20px; padding: 0; }
+.stat pre, .file-meta {
+  white-space: pre-wrap;
+  margin: 0;
+  color: var(--muted);
+}
+.list-block { margin-top: 14px; }
+.list-block ul { margin: 6px 0 0 20px; padding: 0; }
+.file-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.badge, .new-file {
+  background: #ddf4ff;
+  color: #0969da;
+  border: 1px solid #b6e3ff;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 12px;
+}
+.new-file {
+  background: #dafbe1;
+  color: #1a7f37;
+  border-color: #aceebb;
+}
+.line-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+.file-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 8px 16px;
+  padding: 12px;
+  margin: 12px 0;
+  background: #f6f8fa;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.file-meta {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 12px 0;
+}
+.hunk {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 14px 0;
+}
+.hunk-header {
+  display: flex;
+  gap: 12px;
+  padding: 8px 10px;
+  background: #ddf4ff;
+  border-bottom: 1px solid #b6e3ff;
+  color: #0969da;
+}
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.line { background: #fff; }
+.line.add { background: var(--add-bg); }
+.line.delete { background: var(--del-bg); }
+.line.meta { color: var(--muted); }
+.num {
+  width: 58px;
+  padding: 0 8px;
+  text-align: right;
+  color: var(--muted);
+  background: rgba(246, 248, 250, .65);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  vertical-align: top;
+}
+.code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 0 10px;
+  vertical-align: top;
+}
+.prefix {
+  display: inline-block;
+  width: 18px;
+  color: var(--muted);
+}
+.annotation {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--note-bg);
+  border-top: 1px solid var(--note-border);
+}
+.annotation > div { margin: 8px 0; }
+.purpose { font-size: 15px; }
+.code-note {
+  background: #fffdf0;
+  border: 1px solid #ead97a;
+  border-radius: 6px;
+  padding: 10px;
+  margin: 10px 0;
+}
+.code-note-title {
+  color: #7d4e00;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.code-note pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #24292f;
+  color: #f6f8fa;
+  border-radius: 6px;
+  padding: 10px;
+  margin: 6px 0 10px;
+}
+.empty {
+  padding: 18px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: #fff;
+}
+
+</style>
+</head>
+<body>
+<header>
+<h1>AI 代码变更 Diff 理解报告</h1>
+<p class='muted'>生成时间：2026-07-16 13:04:37 · 模型：Qwen / 阿里云百炼 / qwen-plus</p>
+<p class='repo'>仓库：<code>C:\Users\qiuyan\Desktop\公司\小沓\个人更改</code></p>
+</header>
+<main>
+<section class='summary'>
+<h2>本次实现了什么功能</h2>
+<p class='big'>实现了邮件意图智能路由功能，系统能自动判断一封邮件是否属于出入库任务单，如果不是则跳过后续订单解析、策略校验和简道云写入流程，并向用户发送标准化提示回复。</p>
+<div class='summary-grid'>
+<div class='steps'><h3>通过什么方法实现</h3><ol><li>新增独立节点 02_邮件意图路由节点.py，专门负责从邮件主题、正文、附件名中提取关键词或解析大模型输出，归类为&#x27;出入库&#x27;或&#x27;其他&#x27;</li><li>在附件解析、策略校验、简道云写入三个已有节点中统一增加前置判断：若 mail_intent != &#x27;出入库&#x27; 或 is_inoutbound_mail == False，则直接跳过核心逻辑并填充空/默认结果</li><li>将邮件意图判断结果（mail_intent、is_inoutbound_mail）和固定提示语（fixed_reply_message）注入 variables，供下游节点读取</li><li>在简道云写入节点中根据邮件意图动态生成不同内容的自动回复消息，并结构化记录完整执行摘要</li><li>优化附件解析和策略校验中的第三方库导入方式，改为按需导入 requests 和 openpyxl，避免全局依赖冲突</li><li>重构 Excel 表格读取逻辑，用 openpyxl 替代 pandas，提升大文件解析稳定性与内存效率</li></ol></div>
+<div class='steps'><h3>功能执行流程</h3><ol><li>用户发送邮件 → 系统提取 email_info（含 subject、mail_body、attachments）→ 进入邮件意图路由节点</li><li>路由节点调用 _normalize_intent 尝试解析大模型返回的原始意图；失败则 fallback 到关键词匹配（如&#x27;入库&#x27;&#x27;出库&#x27;&#x27;订单号&#x27;等）</li><li>路由节点输出 mail_intent（&#x27;出入库&#x27;/&#x27;其他&#x27;）、is_inoutbound_mail（布尔值）、fixed_reply_message（预设提示语）到 variables</li><li>后续节点（附件解析、策略校验、简道云写入）启动时先检查 variables 中的 is_inoutbound_mail 和 mail_intent，非出入库邮件立即返回跳过标识</li><li>简道云写入节点根据邮件类型选择回复文案：&#x27;其他&#x27;邮件发标准拒收提示；校验失败邮件列明错误项；成功写入则发确认通知</li><li>所有节点均将关键中间变量（如 validation_pass、order_form_id、reply_message）存入 variables，最终 result 字段统一输出 human-readable 回复文本</li><li>整个流程支持异常捕获，任何环节报错都返回 error message，不中断主链路</li></ol></div>
+</div>
+<div class='list-block'><h3>风险提醒</h3><ul><li>已暂存（staged）和未暂存（unstaged）是两套独立变更，请提交前确认 02_邮件意图路由节点.py 已加入暂存区且其余三文件修改已同步</li><li>存在 4 个未跟踪文件（*.txt/*.json/*.html），可能含调试中间产物，建议确认是否需提交或加入 .gitignore</li><li>Windows 换行符警告（LF→CRLF）：02_附件订单解析节点.py、03_出入库策略校验节点.py、03_简道云写入节点.py 在下次 Git 操作时会自动转换，需确保团队开发环境换行符一致性</li><li>02_邮件意图路由节点.py 是全新文件，无历史对比，人工需重点验证 _fallback_intent 关键词列表是否覆盖业务常见表述</li><li>openpyxl 替代 pandas 读 Excel 后，_extract_sheet_rows 返回的是原生 list 而非 DataFrame，下游代码若曾依赖 df.iloc 或 df.columns 需同步调整</li></ul></div>
+<div class='list-block'><h3>建议提交信息</h3><ul><li>feat(邮件路由): 新增 02_邮件意图路由节点，支持关键词 fallback 和大模型意图解析</li><li>refactor(流程控制): 在附件解析、策略校验、简道云写入节点中统一增加邮件意图前置跳过逻辑</li><li>chore(依赖管理): 将 pandas/requests 改为按需导入，提升模块加载性能</li></ul></div>
+</section>
+<section class='summary'>
+<h2>Git 变更概览</h2>
+<div class='grid'>
+<div class='stat'><h3>Git 状态</h3><pre>## main...origin/main
+A  02_邮件意图路由节点.py
+ M 02_附件订单解析节点.py
+ M 03_出入库策略校验节点.py
+ M 03_简道云写入节点.py
+?? 变更Diff旁注提示词_20260716_114346.txt
+?? 变更Diff旁注结果_20260716_114346.json
+?? 变更Diff理解报告_20260716_114346.html
+?? 变更Diff理解报告_最新.html</pre></div>
+<div class='stat'><h3>已暂存</h3><pre>02_邮件意图路由节点.py | 106 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 106 insertions(+)</pre></div>
+<div class='stat'><h3>未暂存</h3><pre>02_附件订单解析节点.py   | 29 +++++++++++++-----
+ 03_出入库策略校验节点.py | 24 +++++++++++++--
+ 03_简道云写入节点.py     | 79 ++++++++++++++++++++++++++++++++++--------------
+ 3 files changed, 101 insertions(+), 31 deletions(-)
+warning: in the working copy of &#x27;02_附件订单解析节点.py&#x27;, LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of &#x27;03_出入库策略校验节点.py&#x27;, LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of &#x27;03_简道云写入节点.py&#x27;, LF will be replaced by CRLF the next time Git touches it</pre></div>
+</div>
+</section>
+<section>
+<h2>代码 Diff 和逐段讲解</h2>
+<p class='muted'>红色是删除，绿色是新增。每段 diff 下面会摘出对应代码，再解释为什么改、语法是什么意思。</p>
+<article class='file-card'>
+<div class='file-header'>
+<span class='badge'>已暂存</span>
+<strong>02_邮件意图路由节点.py</strong>
+<span class='line-count'>+106 / -0</span>
+<span class="new-file">新文件</span>
+</div>
+
+<div class='file-summary'>
+  <div><strong>文件职责：</strong>邮件业务入口决策节点，决定该邮件是否进入出入库处理流水线</div>
+  <div><strong>这次改了什么：</strong>全新实现，包含意图标准化、关键词 fallback、变量注入和结构化输出</div>
+  <div><strong>为什么要改：</strong>原流程缺少明确的邮件分类入口，导致非出入库邮件也触发冗余解析和校验，浪费资源并产生误操作风险</div>
+  <div><strong>检查重点：</strong>人工检查 _fallback_intent 中 keywords 是否遗漏业务高频词（如&#x27;调拨&#x27;&#x27;移库&#x27;&#x27;退料&#x27;），以及 json.loads 异常捕获是否足够健壮</div>
+</div>
+
+<pre class='file-meta'>diff --git 旧版本/02_邮件意图路由节点.py 新版本/02_邮件意图路由节点.py
+new file mode 100644
+index 0000000..c6b8888
+--- /dev/null
++++ 新版本/02_邮件意图路由节点.py</pre>
+<section class='hunk' id='staged-001-001'>
+<div class='hunk-header'><code>staged-001-001</code><span>@@ -0,0 +1,106 @@</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line add'><td class='num'></td><td class='num'>1</td><td class='code'><span class='prefix'>+</span>import json</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>2</td><td class='code'><span class='prefix'>+</span>import typing</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>3</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>4</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>5</td><td class='code'><span class='prefix'>+</span>data = {</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>6</td><td class='code'><span class='prefix'>+</span>    &quot;result&quot;: &quot;&quot;,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>7</td><td class='code'><span class='prefix'>+</span>    &quot;result.success&quot;: False,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>8</td><td class='code'><span class='prefix'>+</span>    &quot;result.inference&quot;: False,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>9</td><td class='code'><span class='prefix'>+</span>    &quot;attachments&quot;: [],</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>10</td><td class='code'><span class='prefix'>+</span>    &quot;variables&quot;: {}</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>11</td><td class='code'><span class='prefix'>+</span>}</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>12</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>13</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>14</td><td class='code'><span class='prefix'>+</span>def _new_data():</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>15</td><td class='code'><span class='prefix'>+</span>    return {</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>16</td><td class='code'><span class='prefix'>+</span>        &quot;result&quot;: &quot;&quot;,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>17</td><td class='code'><span class='prefix'>+</span>        &quot;result.success&quot;: False,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>18</td><td class='code'><span class='prefix'>+</span>        &quot;result.inference&quot;: False,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>19</td><td class='code'><span class='prefix'>+</span>        &quot;attachments&quot;: [],</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>20</td><td class='code'><span class='prefix'>+</span>        &quot;variables&quot;: {}</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>21</td><td class='code'><span class='prefix'>+</span>    }</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>22</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>23</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>24</td><td class='code'><span class='prefix'>+</span>def _text(value):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>25</td><td class='code'><span class='prefix'>+</span>    if value is None:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>26</td><td class='code'><span class='prefix'>+</span>        return &quot;&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>27</td><td class='code'><span class='prefix'>+</span>    if isinstance(value, list):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>28</td><td class='code'><span class='prefix'>+</span>        return &quot;\n&quot;.join([str(item) for item in value if item not in (None, &quot;&quot;)]).strip()</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>29</td><td class='code'><span class='prefix'>+</span>    if isinstance(value, dict):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>30</td><td class='code'><span class='prefix'>+</span>        return json.dumps(value, ensure_ascii=False)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>31</td><td class='code'><span class='prefix'>+</span>    return str(value).strip()</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>32</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>33</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>34</td><td class='code'><span class='prefix'>+</span>def _fallback_intent(email_info):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>35</td><td class='code'><span class='prefix'>+</span>    subject = _text(email_info.get(&quot;subject&quot;, &quot;&quot;))</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>36</td><td class='code'><span class='prefix'>+</span>    body = _text(email_info.get(&quot;mail_body&quot;, &quot;&quot;)) or _text(email_info.get(&quot;text_plain&quot;, &quot;&quot;))</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>37</td><td class='code'><span class='prefix'>+</span>    attachments = email_info.get(&quot;attachments&quot;, []) or []</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>38</td><td class='code'><span class='prefix'>+</span>    attachment_names = &quot; &quot;.join([</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>39</td><td class='code'><span class='prefix'>+</span>        _text(item.get(&quot;filename&quot;, &quot;&quot;)) for item in attachments if isinstance(item, dict)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>40</td><td class='code'><span class='prefix'>+</span>    ])</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>41</td><td class='code'><span class='prefix'>+</span>    text = &quot; &quot;.join([subject, body, attachment_names])</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>42</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>43</td><td class='code'><span class='prefix'>+</span>    keywords = [</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>44</td><td class='code'><span class='prefix'>+</span>        &quot;入库&quot;, &quot;出库&quot;, &quot;提货&quot;, &quot;送货&quot;, &quot;任务单&quot;, &quot;订单号&quot;,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>45</td><td class='code'><span class='prefix'>+</span>        &quot;物料号&quot;, &quot;品名&quot;, &quot;批号&quot;, &quot;货主&quot;, &quot;作业类型&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>46</td><td class='code'><span class='prefix'>+</span>    ]</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>47</td><td class='code'><span class='prefix'>+</span>    if any(keyword in text for keyword in keywords):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>48</td><td class='code'><span class='prefix'>+</span>        return &quot;出入库&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>49</td><td class='code'><span class='prefix'>+</span>    return &quot;其他&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>50</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>51</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>52</td><td class='code'><span class='prefix'>+</span>def _normalize_intent(raw_intent, email_info):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>53</td><td class='code'><span class='prefix'>+</span>    text = _text(raw_intent)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>54</td><td class='code'><span class='prefix'>+</span>    if text.startswith(&quot;{&quot;) and text.endswith(&quot;}&quot;):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>55</td><td class='code'><span class='prefix'>+</span>        try:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>56</td><td class='code'><span class='prefix'>+</span>            parsed = json.loads(text)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>57</td><td class='code'><span class='prefix'>+</span>            text = _text(</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>58</td><td class='code'><span class='prefix'>+</span>                parsed.get(&quot;mail_intent&quot;)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>59</td><td class='code'><span class='prefix'>+</span>                or parsed.get(&quot;intent&quot;)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>60</td><td class='code'><span class='prefix'>+</span>                or parsed.get(&quot;result&quot;)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>61</td><td class='code'><span class='prefix'>+</span>                or parsed</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>62</td><td class='code'><span class='prefix'>+</span>            )</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>63</td><td class='code'><span class='prefix'>+</span>        except Exception:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>64</td><td class='code'><span class='prefix'>+</span>            pass</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>65</td><td class='code'><span class='prefix'>+</span>    if &quot;出入库&quot; in text:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>66</td><td class='code'><span class='prefix'>+</span>        return &quot;出入库&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>67</td><td class='code'><span class='prefix'>+</span>    if &quot;入库&quot; in text or &quot;出库&quot; in text:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>68</td><td class='code'><span class='prefix'>+</span>        return &quot;出入库&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>69</td><td class='code'><span class='prefix'>+</span>    if &quot;其他&quot; in text:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>70</td><td class='code'><span class='prefix'>+</span>        return &quot;其他&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>71</td><td class='code'><span class='prefix'>+</span>    return _fallback_intent(email_info)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>72</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>73</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>74</td><td class='code'><span class='prefix'>+</span>def main(*args, tool_args: dict, **kwargs) -&gt; typing.Any:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>75</td><td class='code'><span class='prefix'>+</span>    data = _new_data()</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>76</td><td class='code'><span class='prefix'>+</span>    variables = kwargs.get(&quot;variables&quot;, {}) or {}</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>77</td><td class='code'><span class='prefix'>+</span>    email_info = variables.get(&quot;email_info&quot;, {}) or {}</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>78</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>79</td><td class='code'><span class='prefix'>+</span>    # 大模型节点默认会把 Text 输出放在 result；若你设置了自定义变量，也可以从 variables 里取。</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>80</td><td class='code'><span class='prefix'>+</span>    raw_intent = (</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>81</td><td class='code'><span class='prefix'>+</span>        variables.get(&quot;mail_intent_llm&quot;)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>82</td><td class='code'><span class='prefix'>+</span>        or variables.get(&quot;intent_result&quot;)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>83</td><td class='code'><span class='prefix'>+</span>        or kwargs.get(&quot;result&quot;, &quot;&quot;)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>84</td><td class='code'><span class='prefix'>+</span>    )</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>85</td><td class='code'><span class='prefix'>+</span>    mail_intent = _normalize_intent(raw_intent, email_info)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>86</td><td class='code'><span class='prefix'>+</span>    is_inoutbound_mail = mail_intent == &quot;出入库&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>87</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>88</td><td class='code'><span class='prefix'>+</span>    fixed_reply_message = (</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>89</td><td class='code'><span class='prefix'>+</span>        &quot;您好，您的邮件已收到。当前邮件内容不属于出入库任务单处理范围，&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>90</td><td class='code'><span class='prefix'>+</span>        &quot;系统暂不生成入库单或出库单。如需处理出入库业务，请发送包含出入库任务单附件的邮件。&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>91</td><td class='code'><span class='prefix'>+</span>    )</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>92</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>93</td><td class='code'><span class='prefix'>+</span>    data[&quot;variables&quot;][&quot;mail_intent_raw&quot;] = _text(raw_intent)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>94</td><td class='code'><span class='prefix'>+</span>    data[&quot;variables&quot;][&quot;mail_intent&quot;] = mail_intent</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>95</td><td class='code'><span class='prefix'>+</span>    data[&quot;variables&quot;][&quot;is_inoutbound_mail&quot;] = is_inoutbound_mail</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>96</td><td class='code'><span class='prefix'>+</span>    data[&quot;variables&quot;][&quot;fixed_reply_message&quot;] = fixed_reply_message</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>97</td><td class='code'><span class='prefix'>+</span>    data[&quot;result.success&quot;] = True</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>98</td><td class='code'><span class='prefix'>+</span>    data[&quot;result.inference&quot;] = True</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>99</td><td class='code'><span class='prefix'>+</span>    data[&quot;result&quot;] = json.dumps(</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>100</td><td class='code'><span class='prefix'>+</span>        {</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>101</td><td class='code'><span class='prefix'>+</span>            &quot;mail_intent&quot;: mail_intent,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>102</td><td class='code'><span class='prefix'>+</span>            &quot;is_inoutbound_mail&quot;: is_inoutbound_mail,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>103</td><td class='code'><span class='prefix'>+</span>        },</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>104</td><td class='code'><span class='prefix'>+</span>        ensure_ascii=False</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>105</td><td class='code'><span class='prefix'>+</span>    )</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>106</td><td class='code'><span class='prefix'>+</span>    return data</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>新建邮件意图路由节点，实现从原始邮件信息中自动判别是否属于出入库业务</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>import json
+import typing</pre>
+  <div><strong>这几行在做什么：</strong>导入基础模块，json 用于解析大模型返回的 JSON 字符串，typing 用于函数类型标注</div>
+  <div><strong>语法补齐：</strong>import 语句</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>def _normalize_intent(raw_intent, email_info):
+    text = _text(raw_intent)
+    if text.startswith(&quot;{&quot;) and text.endswith(&quot;}&quot;):
+        try:
+            parsed = json.loads(text)
+            text = _text(
+                parsed.get(&quot;mail_intent&quot;)
+                or parsed.get(&quot;intent&quot;)
+                or parsed.get(&quot;result&quot;)
+                or parsed
+            )
+        except Exception:
+            pass</pre>
+  <div><strong>这几行在做什么：</strong>尝试把大模型输出的原始字符串当作 JSON 解析，优先取 mail_intent 字段，其次 intent/result，最后用整个对象；解析失败就保持原字符串</div>
+  <div><strong>语法补齐：</strong>if/try/except、字典 get 方法、or 短路求值、函数调用</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>keywords = [
+        &quot;入库&quot;, &quot;出库&quot;, &quot;提货&quot;, &quot;送货&quot;, &quot;任务单&quot;, &quot;订单号&quot;,
+        &quot;物料号&quot;, &quot;品名&quot;, &quot;批号&quot;, &quot;货主&quot;, &quot;作业类型&quot;
+    ]
+    if any(keyword in text for keyword in keywords):
+        return &quot;出入库&quot;
+    return &quot;其他&quot;</pre>
+  <div><strong>这几行在做什么：</strong>遍历预设关键词列表，只要邮件文本中出现任一词，就判定为出入库邮件，否则归为其他</div>
+  <div><strong>语法补齐：</strong>列表定义、any 函数、for in 生成器表达式、in 成员判断、return 语句</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>def main(*args, tool_args: dict, **kwargs) -&gt; typing.Any:
+    data = _new_data()
+    variables = kwargs.get(&quot;variables&quot;, {}) or {}
+    email_info = variables.get(&quot;email_info&quot;, {}) or {}</pre>
+  <div><strong>这几行在做什么：</strong>主函数入口，初始化 data 结构，从 kwargs.variables 中安全获取 email_info，避免 key 不存在报错</div>
+  <div><strong>语法补齐：</strong>函数定义带类型注解、字典 get 方法带默认值、or 空字典兜底</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>raw_intent = (
+        variables.get(&quot;mail_intent_llm&quot;)
+        or variables.get(&quot;intent_result&quot;)
+        or kwargs.get(&quot;result&quot;, &quot;&quot;)
+    )</pre>
+  <div><strong>这几行在做什么：</strong>按优先级顺序尝试获取大模型输出的原始意图：先找 mail_intent_llm，再 intent_result，最后回退到通用 result 字段</div>
+  <div><strong>语法补齐：</strong>括号换行、or 短路求值、字典 get 方法</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>data[&quot;variables&quot;][&quot;mail_intent_raw&quot;] = _text(raw_intent)
+    data[&quot;variables&quot;][&quot;mail_intent&quot;] = mail_intent
+    data[&quot;variables&quot;][&quot;is_inoutbound_mail&quot;] = is_inoutbound_mail
+    data[&quot;variables&quot;][&quot;fixed_reply_message&quot;] = fixed_reply_message</pre>
+  <div><strong>这几行在做什么：</strong>把原始意图、归一化后的意图、布尔标志、固定提示语全部存入 data.variables，供下游节点使用</div>
+  <div><strong>语法补齐：</strong>字典嵌套赋值、字符串拼接、变量引用</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>data[&quot;result.success&quot;] = True
+    data[&quot;result.inference&quot;] = True
+    data[&quot;result&quot;] = json.dumps(
+        {
+            &quot;mail_intent&quot;: mail_intent,
+            &quot;is_inoutbound_mail&quot;: is_inoutbound_mail,
+        },
+        ensure_ascii=False
+    )</pre>
+  <div><strong>这几行在做什么：</strong>标记流程执行成功，设置推理完成标志，并将核心判断结果以中文可读 JSON 形式输出到 result 字段</div>
+  <div><strong>语法补齐：</strong>字典键赋值、json.dumps、ensure_ascii=False 保留中文</div>
+</div>
+
+  <div><strong>重点检查：</strong>检查 _fallback_intent 中 keywords 是否漏掉业务新词（如&#x27;委外加工&#x27;&#x27;返工&#x27;）；确认 _text 对 None/list/dict 的转换逻辑是否与下游期望一致</div>
+  <div><strong>建议测试：</strong>用测试邮件：① 主题含&#x27;入库单&#x27; → 应返回 mail_intent=&#x27;出入库&#x27;；② 大模型返回 &#x27;{&quot;mail_intent&quot;:&quot;出入库&quot;}&#x27; → 应正确解析；③ 空邮件 → 应 fallback 到&#x27;其他&#x27;</div>
+</div>
+
+</section>
+</article>
+<article class='file-card'>
+<div class='file-header'>
+<span class='badge'>未暂存</span>
+<strong>02_附件订单解析节点.py</strong>
+<span class='line-count'>+22 / -7</span>
+
+</div>
+
+<div class='file-summary'>
+  <div><strong>文件职责：</strong>从邮件附件（Excel）中提取原始订单数据，转为结构化列表</div>
+  <div><strong>这次改了什么：</strong>移除全局 pandas/requests 导入，改为局部导入；重写 Excel 解析逻辑为 openpyxl；增加邮件意图前置跳过逻辑</div>
+  <div><strong>为什么要改：</strong>降低冷启动依赖、避免 pandas 内存泄漏风险；适配新路由结果，防止对非出入库邮件做无效解析</div>
+  <div><strong>检查重点：</strong>人工检查 _extract_sheet_rows 返回的 row 是否仍满足 _find_table_start 对空单元格的判定逻辑（None vs &#x27;&#x27; vs NaN）</div>
+</div>
+
+<pre class='file-meta'>diff --git 旧版本/02_附件订单解析节点.py 新版本/02_附件订单解析节点.py
+index c7b2211..669f803 100644
+--- 旧版本/02_附件订单解析节点.py
++++ 新版本/02_附件订单解析节点.py</pre>
+<section class='hunk' id='unstaged-001-001'>
+<div class='hunk-header'><code>unstaged-001-001</code><span>@@ -1,14 +1,11 @@</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>1</td><td class='num'>1</td><td class='code'><span class='prefix'> </span>import json</td></tr>
+<tr class='line context'><td class='num'>2</td><td class='num'>2</td><td class='code'><span class='prefix'> </span>import re</td></tr>
+<tr class='line context'><td class='num'>3</td><td class='num'>3</td><td class='code'><span class='prefix'> </span>import typing</td></tr>
+<tr class='line context'><td class='num'>4</td><td class='num'>4</td><td class='code'><span class='prefix'> </span>from io import BytesIO</td></tr>
+<tr class='line context'><td class='num'>5</td><td class='num'>5</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line delete'><td class='num'>6</td><td class='num'></td><td class='code'><span class='prefix'>-</span>import pandas as pd</td></tr>
+<tr class='line delete'><td class='num'>7</td><td class='num'></td><td class='code'><span class='prefix'>-</span>import requests</td></tr>
+<tr class='line delete'><td class='num'>8</td><td class='num'></td><td class='code'><span class='prefix'>-</span></td></tr>
+<tr class='line context'><td class='num'>9</td><td class='num'>6</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>10</td><td class='num'>7</td><td class='code'><span class='prefix'> </span>data = {</td></tr>
+<tr class='line context'><td class='num'>11</td><td class='num'>8</td><td class='code'><span class='prefix'> </span>    &quot;result&quot;: &quot;&quot;,</td></tr>
+<tr class='line context'><td class='num'>12</td><td class='num'>9</td><td class='code'><span class='prefix'> </span>    &quot;result.success&quot;: False,</td></tr>
+<tr class='line context'><td class='num'>13</td><td class='num'>10</td><td class='code'><span class='prefix'> </span>    &quot;result.inference&quot;: False,</td></tr>
+<tr class='line context'><td class='num'>14</td><td class='num'>11</td><td class='code'><span class='prefix'> </span>    &quot;attachments&quot;: [],</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>移除附件解析节点中不必要的 pandas 和 requests 全局导入，减小启动开销</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>import json
+import re
+import typing
+from io import BytesIO</pre>
+  <div><strong>这几行在做什么：</strong>保留必需的基础模块：json 处理数据、re 正则匹配、typing 类型提示、BytesIO 处理二进制流</div>
+  <div><strong>语法补齐：</strong>import 语句</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>-import pandas as pd
+-import requests</pre>
+  <div><strong>这几行在做什么：</strong>删除全局导入，后续改用函数内局部导入，避免未使用时加载多余模块</div>
+  <div><strong>语法补齐：</strong>import 语句删除</div>
+</div>
+
+  <div><strong>重点检查：</strong>确认后续所有使用 pd 或 requests 的地方均已改为局部 import，且无残留别名引用</div>
+  <div><strong>建议测试：</strong>运行附件解析节点，验证 Excel 下载和解析功能是否正常，特别关注超大附件场景内存占用</div>
+</div>
+
+</section>
+<section class='hunk' id='unstaged-001-002'>
+<div class='hunk-header'><code>unstaged-001-002</code><span>@@ -58,12 +55,14 @@ def _normalize_text(value):</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>58</td><td class='num'>55</td><td class='code'><span class='prefix'> </span>    if isinstance(value, list):</td></tr>
+<tr class='line context'><td class='num'>59</td><td class='num'>56</td><td class='code'><span class='prefix'> </span>        return &quot;\n&quot;.join([str(item) for item in value if item not in (None, &quot;&quot;)]).strip()</td></tr>
+<tr class='line context'><td class='num'>60</td><td class='num'>57</td><td class='code'><span class='prefix'> </span>    return str(value).strip()</td></tr>
+<tr class='line context'><td class='num'>61</td><td class='num'>58</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>62</td><td class='num'>59</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>63</td><td class='num'>60</td><td class='code'><span class='prefix'> </span>def _download_xlsx(oss_url):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>61</td><td class='code'><span class='prefix'>+</span>    import requests</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>62</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line context'><td class='num'>64</td><td class='num'>63</td><td class='code'><span class='prefix'> </span>    response = requests.get(oss_url, timeout=60)</td></tr>
+<tr class='line context'><td class='num'>65</td><td class='num'>64</td><td class='code'><span class='prefix'> </span>    if response.status_code != 200:</td></tr>
+<tr class='line context'><td class='num'>66</td><td class='num'>65</td><td class='code'><span class='prefix'> </span>        raise Exception(f&quot;download file failed: {response.status_code}&quot;)</td></tr>
+<tr class='line context'><td class='num'>67</td><td class='num'>66</td><td class='code'><span class='prefix'> </span>    return BytesIO(response.content)</td></tr>
+<tr class='line context'><td class='num'>68</td><td class='num'>67</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>69</td><td class='num'>68</td><td class='code'><span class='prefix'> </span></td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>在附件下载函数中按需导入 requests，避免全局依赖</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+    import requests</pre>
+  <div><strong>这几行在做什么：</strong>只在需要发起 HTTP 请求的函数内部导入 requests，提升模块加载速度，减少冷启动时间</div>
+  <div><strong>语法补齐：</strong>函数内 import 语句</div>
+</div>
+
+  <div><strong>重点检查：</strong>检查是否所有 requests 调用都在 import 之后，防止 NameError</div>
+  <div><strong>建议测试：</strong>传入有效 OSS URL，验证下载成功；传入 404 URL，验证是否抛出预期 Exception</div>
+</div>
+
+</section>
+<section class='hunk' id='unstaged-001-003'>
+<div class='hunk-header'><code>unstaged-001-003</code><span>@@ -80,15 +79,17 @@ def _cell_text(value):</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>80</td><td class='num'>79</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>81</td><td class='num'>80</td><td class='code'><span class='prefix'> </span>def _row_text(row):</td></tr>
+<tr class='line context'><td class='num'>82</td><td class='num'>81</td><td class='code'><span class='prefix'> </span>    return &quot; &quot;.join([_cell_text(cell) for cell in row if _cell_text(cell)])</td></tr>
+<tr class='line context'><td class='num'>83</td><td class='num'>82</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>84</td><td class='num'>83</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>85</td><td class='num'>84</td><td class='code'><span class='prefix'> </span>def _extract_sheet_rows(xlsx_bytes):</td></tr>
+<tr class='line delete'><td class='num'>86</td><td class='num'></td><td class='code'><span class='prefix'>-</span>    workbook = pd.ExcelFile(xlsx_bytes, engine=&quot;openpyxl&quot;)</td></tr>
+<tr class='line delete'><td class='num'>87</td><td class='num'></td><td class='code'><span class='prefix'>-</span>    df = pd.read_excel(workbook, sheet_name=0, header=None, dtype=object, engine=&quot;openpyxl&quot;)</td></tr>
+<tr class='line delete'><td class='num'>88</td><td class='num'></td><td class='code'><span class='prefix'>-</span>    return df.where(pd.notnull(df), None).values.tolist()</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>85</td><td class='code'><span class='prefix'>+</span>    from openpyxl import load_workbook</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>86</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>87</td><td class='code'><span class='prefix'>+</span>    workbook = load_workbook(xlsx_bytes, data_only=True, read_only=True)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>88</td><td class='code'><span class='prefix'>+</span>    worksheet = workbook.worksheets[0]</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>89</td><td class='code'><span class='prefix'>+</span>    return [list(row) for row in worksheet.iter_rows(values_only=True)]</td></tr>
+<tr class='line context'><td class='num'>89</td><td class='num'>90</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>90</td><td class='num'>91</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>91</td><td class='num'>92</td><td class='code'><span class='prefix'> </span>def _find_table_start(rows):</td></tr>
+<tr class='line context'><td class='num'>92</td><td class='num'>93</td><td class='code'><span class='prefix'> </span>    for row_index, row in enumerate(rows):</td></tr>
+<tr class='line context'><td class='num'>93</td><td class='num'>94</td><td class='code'><span class='prefix'> </span>        row_text = _row_text(row)</td></tr>
+<tr class='line context'><td class='num'>94</td><td class='num'>95</td><td class='code'><span class='prefix'> </span>        hit_count = sum(1 for keyword in TABLE_HEADER_KEYWORDS if keyword in row_text)</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>将 Excel 解析从 pandas 替换为 openpyxl，提升大文件兼容性和稳定性</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+    from openpyxl import load_workbook
++
++    workbook = load_workbook(xlsx_bytes, data_only=True, read_only=True)
++    worksheet = workbook.worksheets[0]
++    return [list(row) for row in worksheet.iter_rows(values_only=True)]</pre>
+  <div><strong>这几行在做什么：</strong>用 openpyxl 加载 Excel 字节流，启用 data_only（取公式结果而非公式本身）和 read_only（节省内存），逐行读取值并转为 list 列表</div>
+  <div><strong>语法补齐：</strong>from import、函数调用带参数、列表推导式、属性访问</div>
+</div>
+
+  <div><strong>重点检查：</strong>确认 worksheet.iter_rows(values_only=True) 返回的每一行是否仍为 tuple，且空单元格返回 None（与原 pandas 的 NaN 行为一致）</div>
+  <div><strong>建议测试：</strong>用含公式、合并单元格、空行的测试 Excel，验证 _extract_sheet_rows 输出是否与原逻辑一致</div>
+</div>
+
+</section>
+<section class='hunk' id='unstaged-001-004'>
+<div class='hunk-header'><code>unstaged-001-004</code><span>@@ -215,15 +216,29 @@ def _build_driver_vehicle_info(rows, body_fields):</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>215</td><td class='num'>216</td><td class='code'><span class='prefix'> </span>    }</td></tr>
+<tr class='line context'><td class='num'>216</td><td class='num'>217</td><td class='code'><span class='prefix'> </span>    return info</td></tr>
+<tr class='line context'><td class='num'>217</td><td class='num'>218</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>218</td><td class='num'>219</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>219</td><td class='num'>220</td><td class='code'><span class='prefix'> </span>def main(*args, tool_args: dict, **kwargs) -&gt; typing.Any:</td></tr>
+<tr class='line context'><td class='num'>220</td><td class='num'>221</td><td class='code'><span class='prefix'> </span>    data = _new_data()</td></tr>
+<tr class='line delete'><td class='num'>221</td><td class='num'></td><td class='code'><span class='prefix'>-</span>    email_info = kwargs.get(&quot;variables&quot;, {}).get(&quot;email_info&quot;, {}) or {}</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>222</td><td class='code'><span class='prefix'>+</span>    variables = kwargs.get(&quot;variables&quot;, {}) or {}</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>223</td><td class='code'><span class='prefix'>+</span>    email_info = variables.get(&quot;email_info&quot;, {}) or {}</td></tr>
+<tr class='line context'><td class='num'>222</td><td class='num'>224</td><td class='code'><span class='prefix'> </span>    attachments = email_info.get(&quot;attachments&quot;, []) or []</td></tr>
+<tr class='line context'><td class='num'>223</td><td class='num'>225</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>226</td><td class='code'><span class='prefix'>+</span>    if variables.get(&quot;is_inoutbound_mail&quot;) is False or variables.get(&quot;mail_intent&quot;) == &quot;其他&quot;:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>227</td><td class='code'><span class='prefix'>+</span>        data[&quot;result.success&quot;] = True</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>228</td><td class='code'><span class='prefix'>+</span>        data[&quot;result.inference&quot;] = True</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>229</td><td class='code'><span class='prefix'>+</span>        data[&quot;result&quot;] = &quot;邮件意图不是出入库，已跳过附件订单解析&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>230</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;source_order_info&quot;] = []</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>231</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;customer_info&quot;] = []</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>232</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;driver_vehicle_info&quot;] = []</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>233</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;company_name&quot;] = &quot;&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>234</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;job_type&quot;] = &quot;&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>235</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;attachment_filename&quot;] = &quot;&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>236</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;attachment_oss_url&quot;] = &quot;&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>237</td><td class='code'><span class='prefix'>+</span>        return data</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>238</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line context'><td class='num'>224</td><td class='num'>239</td><td class='code'><span class='prefix'> </span>    if not attachments:</td></tr>
+<tr class='line context'><td class='num'>225</td><td class='num'>240</td><td class='code'><span class='prefix'> </span>        data[&quot;result.success&quot;] = True</td></tr>
+<tr class='line context'><td class='num'>226</td><td class='num'>241</td><td class='code'><span class='prefix'> </span>        data[&quot;result.inference&quot;] = True</td></tr>
+<tr class='line context'><td class='num'>227</td><td class='num'>242</td><td class='code'><span class='prefix'> </span>        data[&quot;result&quot;] = &quot;no attachments&quot;</td></tr>
+<tr class='line context'><td class='num'>228</td><td class='num'>243</td><td class='code'><span class='prefix'> </span>        data[&quot;variables&quot;][&quot;source_order_info&quot;] = []</td></tr>
+<tr class='line context'><td class='num'>229</td><td class='num'>244</td><td class='code'><span class='prefix'> </span>        data[&quot;variables&quot;][&quot;customer_info&quot;] = []</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>在附件解析主函数开头增加邮件意图校验，非出入库邮件直接跳过解析</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+    if variables.get(&quot;is_inoutbound_mail&quot;) is False or variables.get(&quot;mail_intent&quot;) == &quot;其他&quot;:
++        data[&quot;result.success&quot;] = True
++        data[&quot;result.inference&quot;] = True
++        data[&quot;result&quot;] = &quot;邮件意图不是出入库，已跳过附件订单解析&quot;
++        data[&quot;variables&quot;][&quot;source_order_info&quot;] = []
++        data[&quot;variables&quot;][&quot;customer_info&quot;] = []
++        data[&quot;variables&quot;][&quot;driver_vehicle_info&quot;] = []
++        data[&quot;variables&quot;][&quot;company_name&quot;] = &quot;&quot;
++        data[&quot;variables&quot;][&quot;job_type&quot;] = &quot;&quot;
++        data[&quot;variables&quot;][&quot;attachment_filename&quot;] = &quot;&quot;
++        data[&quot;variables&quot;][&quot;attachment_oss_url&quot;] = &quot;&quot;
++        return data</pre>
+  <div><strong>这几行在做什么：</strong>检查 variables 中的两个关键标志，满足任一条件即终止流程，清空所有订单相关变量并返回跳过提示</div>
+  <div><strong>语法补齐：</strong>if 条件判断、字典赋值、return 语句</div>
+</div>
+
+  <div><strong>重点检查：</strong>确认所有被清空的 variables 键名（如 source_order_info）是否与下游节点读取的键名完全一致，避免 KeyError</div>
+  <div><strong>建议测试：</strong>传入 variables={&quot;is_inoutbound_mail&quot;: False}，验证是否立即返回且 result 字段为指定字符串</div>
+</div>
+
+</section>
+</article>
+<article class='file-card'>
+<div class='file-header'>
+<span class='badge'>未暂存</span>
+<strong>03_出入库策略校验节点.py</strong>
+<span class='line-count'>+22 / -2</span>
+
+</div>
+
+<div class='file-summary'>
+  <div><strong>文件职责：</strong>校验提取的订单数据是否符合仓库出入库规则（如库存、货主、SKU 等）</div>
+  <div><strong>这次改了什么：</strong>移除全局 requests 导入，改为局部导入；增加邮件意图前置跳过逻辑；校验失败时仍输出结构化 result</div>
+  <div><strong>为什么要改：</strong>避免非出入库邮件触发耗时的 API 校验调用；保证跳过时 variables 字段与下游节点契约一致</div>
+  <div><strong>检查重点：</strong>人工检查 _post_json 和 _query_stock 的局部 import 是否被函数内其他逻辑意外覆盖，以及跳过时 validation_pass=None 是否被下游正确识别</div>
+</div>
+
+<pre class='file-meta'>diff --git 旧版本/03_出入库策略校验节点.py 新版本/03_出入库策略校验节点.py
+index d492844..a413aa6 100644
+--- 旧版本/03_出入库策略校验节点.py
++++ 新版本/03_出入库策略校验节点.py</pre>
+<section class='hunk' id='unstaged-002-001'>
+<div class='hunk-header'><code>unstaged-002-001</code><span>@@ -1,12 +1,10 @@</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>1</td><td class='num'>1</td><td class='code'><span class='prefix'> </span>import json</td></tr>
+<tr class='line context'><td class='num'>2</td><td class='num'>2</td><td class='code'><span class='prefix'> </span>import re</td></tr>
+<tr class='line context'><td class='num'>3</td><td class='num'>3</td><td class='code'><span class='prefix'> </span>import typing</td></tr>
+<tr class='line context'><td class='num'>4</td><td class='num'>4</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line delete'><td class='num'>5</td><td class='num'></td><td class='code'><span class='prefix'>-</span>import requests</td></tr>
+<tr class='line delete'><td class='num'>6</td><td class='num'></td><td class='code'><span class='prefix'>-</span></td></tr>
+<tr class='line context'><td class='num'>7</td><td class='num'>5</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>8</td><td class='num'>6</td><td class='code'><span class='prefix'> </span>data = {</td></tr>
+<tr class='line context'><td class='num'>9</td><td class='num'>7</td><td class='code'><span class='prefix'> </span>    &quot;result&quot;: &quot;&quot;,</td></tr>
+<tr class='line context'><td class='num'>10</td><td class='num'>8</td><td class='code'><span class='prefix'> </span>    &quot;result.success&quot;: False,</td></tr>
+<tr class='line context'><td class='num'>11</td><td class='num'>9</td><td class='code'><span class='prefix'> </span>    &quot;result.inference&quot;: False,</td></tr>
+<tr class='line context'><td class='num'>12</td><td class='num'>10</td><td class='code'><span class='prefix'> </span>    &quot;attachments&quot;: [],</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>移除出入库策略校验节点中不必要的 requests 全局导入</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>-import requests</pre>
+  <div><strong>这几行在做什么：</strong>删除全局导入，后续改用函数内局部导入，精简依赖</div>
+  <div><strong>语法补齐：</strong>import 语句删除</div>
+</div>
+
+  <div><strong>重点检查：</strong>确认 _post_json 和 _query_stock 函数内均已添加 import requests</div>
+  <div><strong>建议测试：</strong>运行策略校验，验证 API 调用是否正常</div>
+</div>
+
+</section>
+<section class='hunk' id='unstaged-002-002'>
+<div class='hunk-header'><code>unstaged-002-002</code><span>@@ -85,12 +83,14 @@ def _split_items(text):</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>85</td><td class='num'>83</td><td class='code'><span class='prefix'> </span>    if not raw:</td></tr>
+<tr class='line context'><td class='num'>86</td><td class='num'>84</td><td class='code'><span class='prefix'> </span>        return []</td></tr>
+<tr class='line context'><td class='num'>87</td><td class='num'>85</td><td class='code'><span class='prefix'> </span>    return [item.strip() for item in re.split(r&quot;[,，;；、\n\r]+&quot;, raw) if item.strip()]</td></tr>
+<tr class='line context'><td class='num'>88</td><td class='num'>86</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>89</td><td class='num'>87</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>90</td><td class='num'>88</td><td class='code'><span class='prefix'> </span>def _post_json(url, payload, timeout=60):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>89</td><td class='code'><span class='prefix'>+</span>    import requests</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>90</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line context'><td class='num'>91</td><td class='num'>91</td><td class='code'><span class='prefix'> </span>    headers = {</td></tr>
+<tr class='line context'><td class='num'>92</td><td class='num'>92</td><td class='code'><span class='prefix'> </span>        &quot;Authorization&quot;: f&quot;Bearer {API_KEY}&quot;,</td></tr>
+<tr class='line context'><td class='num'>93</td><td class='num'>93</td><td class='code'><span class='prefix'> </span>        &quot;Content-Type&quot;: &quot;application/json&quot;</td></tr>
+<tr class='line context'><td class='num'>94</td><td class='num'>94</td><td class='code'><span class='prefix'> </span>    }</td></tr>
+<tr class='line context'><td class='num'>95</td><td class='num'>95</td><td class='code'><span class='prefix'> </span>    response = requests.post(url, headers=headers, json=payload, timeout=timeout)</td></tr>
+<tr class='line context'><td class='num'>96</td><td class='num'>96</td><td class='code'><span class='prefix'> </span>    if response.status_code != 200:</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>在策略校验的 HTTP 请求函数中按需导入 requests</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+    import requests</pre>
+  <div><strong>这几行在做什么：</strong>仅在真正需要发请求的函数里导入，避免模块加载时阻塞</div>
+  <div><strong>语法补齐：</strong>函数内 import 语句</div>
+</div>
+
+  <div><strong>重点检查：</strong>检查 response.status_code != 200 分支是否仍能正确 raise Exception</div>
+  <div><strong>建议测试：</strong>模拟 API 返回 400，验证是否抛出带状态码的 Exception</div>
+</div>
+
+</section>
+<section class='hunk' id='unstaged-002-003'>
+<div class='hunk-header'><code>unstaged-002-003</code><span>@@ -212,12 +212,14 @@ def _sample_rows(rows, limit=5):</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>212</td><td class='num'>212</td><td class='code'><span class='prefix'> </span>            &quot;unit&quot;: _safe_get(row, &quot;unit&quot;, default=&quot;&quot;),</td></tr>
+<tr class='line context'><td class='num'>213</td><td class='num'>213</td><td class='code'><span class='prefix'> </span>        })</td></tr>
+<tr class='line context'><td class='num'>214</td><td class='num'>214</td><td class='code'><span class='prefix'> </span>    return sample</td></tr>
+<tr class='line context'><td class='num'>215</td><td class='num'>215</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>216</td><td class='num'>216</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>217</td><td class='num'>217</td><td class='code'><span class='prefix'> </span>def _query_stock(unit, department_code, sku=&quot;&quot;, lotatt04=&quot;&quot;):</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>218</td><td class='code'><span class='prefix'>+</span>    import requests</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>219</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line context'><td class='num'>218</td><td class='num'>220</td><td class='code'><span class='prefix'> </span>    payload = {</td></tr>
+<tr class='line context'><td class='num'>219</td><td class='num'>221</td><td class='code'><span class='prefix'> </span>        &quot;unit&quot;: unit or &quot;普工路仓库&quot;,</td></tr>
+<tr class='line context'><td class='num'>220</td><td class='num'>222</td><td class='code'><span class='prefix'> </span>        &quot;pageSize&quot;: 200,</td></tr>
+<tr class='line context'><td class='num'>221</td><td class='num'>223</td><td class='code'><span class='prefix'> </span>        &quot;pageNum&quot;: 1,</td></tr>
+<tr class='line context'><td class='num'>222</td><td class='num'>224</td><td class='code'><span class='prefix'> </span>        &quot;customerid&quot;: department_code,</td></tr>
+<tr class='line context'><td class='num'>223</td><td class='num'>225</td><td class='code'><span class='prefix'> </span>        &quot;sku&quot;: sku,</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>在库存查询函数中按需导入 requests</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+    import requests</pre>
+  <div><strong>这几行在做什么：</strong>同上，确保 requests 仅在必要时加载</div>
+  <div><strong>语法补齐：</strong>函数内 import 语句</div>
+</div>
+
+  <div><strong>重点检查：</strong>确认 payload 构造和 response 解析逻辑未因 import 位置改变而失效</div>
+  <div><strong>建议测试：</strong>传入有效 unit/dept_code，验证是否返回预期 stock 数据</div>
+</div>
+
+</section>
+<section class='hunk' id='unstaged-002-004'>
+<div class='hunk-header'><code>unstaged-002-004</code><span>@@ -367,12 +369,30 @@ def main(*args, tool_args: dict, **kwargs) -&gt; typing.Any:</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>367</td><td class='num'>369</td><td class='code'><span class='prefix'> </span>    data = _new_data()</td></tr>
+<tr class='line context'><td class='num'>368</td><td class='num'>370</td><td class='code'><span class='prefix'> </span>    variables = kwargs.get(&quot;variables&quot;, {}) or {}</td></tr>
+<tr class='line context'><td class='num'>369</td><td class='num'>371</td><td class='code'><span class='prefix'> </span>    email_info = variables.get(&quot;email_info&quot;, {}) or {}</td></tr>
+<tr class='line context'><td class='num'>370</td><td class='num'>372</td><td class='code'><span class='prefix'> </span>    orders = variables.get(&quot;source_order_info&quot;, []) or []</td></tr>
+<tr class='line context'><td class='num'>371</td><td class='num'>373</td><td class='code'><span class='prefix'> </span>    job_type = _safe_get({&quot;job_type&quot;: variables.get(&quot;job_type&quot;)}, &quot;job_type&quot;, default=&quot;&quot;) or _safe_get(email_info, &quot;job_type&quot;, default=&quot;&quot;)</td></tr>
+<tr class='line context'><td class='num'>372</td><td class='num'>374</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>375</td><td class='code'><span class='prefix'>+</span>    if variables.get(&quot;is_inoutbound_mail&quot;) is False or variables.get(&quot;mail_intent&quot;) == &quot;其他&quot;:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>376</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;validation_pass&quot;] = None</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>377</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;validation_message&quot;] = &quot;邮件意图不是出入库，已跳过出入库策略校验&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>378</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;validation_errors&quot;] = []</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>379</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;stock_check_debug&quot;] = []</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>380</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;matched_owner_strategy&quot;] = {}</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>381</td><td class='code'><span class='prefix'>+</span>        data[&quot;result.success&quot;] = True</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>382</td><td class='code'><span class='prefix'>+</span>        data[&quot;result.inference&quot;] = True</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>383</td><td class='code'><span class='prefix'>+</span>        data[&quot;result&quot;] = json.dumps(</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>384</td><td class='code'><span class='prefix'>+</span>            {</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>385</td><td class='code'><span class='prefix'>+</span>                &quot;validation_pass&quot;: None,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>386</td><td class='code'><span class='prefix'>+</span>                &quot;validation_message&quot;: data[&quot;variables&quot;][&quot;validation_message&quot;],</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>387</td><td class='code'><span class='prefix'>+</span>                &quot;mail_intent&quot;: variables.get(&quot;mail_intent&quot;, &quot;其他&quot;),</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>388</td><td class='code'><span class='prefix'>+</span>            },</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>389</td><td class='code'><span class='prefix'>+</span>            ensure_ascii=False</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>390</td><td class='code'><span class='prefix'>+</span>        )</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>391</td><td class='code'><span class='prefix'>+</span>        return data</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>392</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line context'><td class='num'>373</td><td class='num'>393</td><td class='code'><span class='prefix'> </span>    errors = []</td></tr>
+<tr class='line context'><td class='num'>374</td><td class='num'>394</td><td class='code'><span class='prefix'> </span>    config_row = {}</td></tr>
+<tr class='line context'><td class='num'>375</td><td class='num'>395</td><td class='code'><span class='prefix'> </span>    strategy_names = []</td></tr>
+<tr class='line context'><td class='num'>376</td><td class='num'>396</td><td class='code'><span class='prefix'> </span>    stock_check_debug = []</td></tr>
+<tr class='line context'><td class='num'>377</td><td class='num'>397</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>378</td><td class='num'>398</td><td class='code'><span class='prefix'> </span>    try:</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>在策略校验主函数开头增加邮件意图校验，非出入库邮件直接跳过校验</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+    if variables.get(&quot;is_inoutbound_mail&quot;) is False or variables.get(&quot;mail_intent&quot;) == &quot;其他&quot;:
++        data[&quot;variables&quot;][&quot;validation_pass&quot;] = None
++        data[&quot;variables&quot;][&quot;validation_message&quot;] = &quot;邮件意图不是出入库，已跳过出入库策略校验&quot;
++        data[&quot;variables&quot;][&quot;validation_errors&quot;] = []
++        data[&quot;variables&quot;][&quot;stock_check_debug&quot;] = []
++        data[&quot;variables&quot;][&quot;matched_owner_strategy&quot;] = {}
++        data[&quot;result.success&quot;] = True
++        data[&quot;result.inference&quot;] = True
++        data[&quot;result&quot;] = json.dumps(
++            {
++                &quot;validation_pass&quot;: None,
++                &quot;validation_message&quot;: data[&quot;variables&quot;][&quot;validation_message&quot;],
++                &quot;mail_intent&quot;: variables.get(&quot;mail_intent&quot;, &quot;其他&quot;),
++            },
++            ensure_ascii=False
+        )
++        return data</pre>
+  <div><strong>这几行在做什么：</strong>提前退出校验流程，设置 validation_pass=None 表示未执行，同时输出结构化 JSON 到 result 供调试</div>
+  <div><strong>语法补齐：</strong>if 判断、字典赋值、json.dumps、return</div>
+</div>
+
+  <div><strong>重点检查：</strong>确认下游节点是否能正确处理 validation_pass=None（而非 True/False），避免逻辑分支错判</div>
+  <div><strong>建议测试：</strong>传入 variables={&quot;mail_intent&quot;: &quot;其他&quot;}，验证 result 字段是否为含 validation_pass:null 的 JSON</div>
+</div>
+
+</section>
+</article>
+<article class='file-card'>
+<div class='file-header'>
+<span class='badge'>未暂存</span>
+<strong>03_简道云写入节点.py</strong>
+<span class='line-count'>+57 / -22</span>
+
+</div>
+
+<div class='file-summary'>
+  <div><strong>文件职责：</strong>将校验通过的订单数据写入简道云系统，并生成客户回复邮件</div>
+  <div><strong>这次改了什么：</strong>新增 mail_intent/is_inoutbound_mail/fixed_reply_message 变量读取；重构 reply_message 生成逻辑；result 改为输出纯文本而非 JSON；write_summary 移入 variables</div>
+  <div><strong>为什么要改：</strong>使自动回复内容精准匹配邮件意图类型；简化前端展示逻辑（不再需 JSON 解析）；提供完整执行快照便于审计</div>
+  <div><strong>检查重点：</strong>人工检查 reply_message 中各分支文案是否符合客服规范，特别是 validation_errors 列表渲染是否防 XSS（当前无 HTML 转义）</div>
+</div>
+
+<pre class='file-meta'>diff --git 旧版本/03_简道云写入节点.py 新版本/03_简道云写入节点.py
+index db76613..d7ce990 100644
+--- 旧版本/03_简道云写入节点.py
++++ 新版本/03_简道云写入节点.py</pre>
+<section class='hunk' id='unstaged-003-001'>
+<div class='hunk-header'><code>unstaged-003-001</code><span>@@ -430,12 +430,15 @@ def main(*args, tool_args: dict, **kwargs) -&gt; typing.Any:</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>430</td><td class='num'>430</td><td class='code'><span class='prefix'> </span>    source_order_info = variables.get(&quot;source_order_info&quot;, []) or []</td></tr>
+<tr class='line context'><td class='num'>431</td><td class='num'>431</td><td class='code'><span class='prefix'> </span>    validation_pass = variables.get(&quot;validation_pass&quot;, None)</td></tr>
+<tr class='line context'><td class='num'>432</td><td class='num'>432</td><td class='code'><span class='prefix'> </span>    validation_message = variables.get(&quot;validation_message&quot;, &quot;&quot;)</td></tr>
+<tr class='line context'><td class='num'>433</td><td class='num'>433</td><td class='code'><span class='prefix'> </span>    validation_errors = variables.get(&quot;validation_errors&quot;, [])</td></tr>
+<tr class='line context'><td class='num'>434</td><td class='num'>434</td><td class='code'><span class='prefix'> </span>    stock_check_debug = variables.get(&quot;stock_check_debug&quot;, [])</td></tr>
+<tr class='line context'><td class='num'>435</td><td class='num'>435</td><td class='code'><span class='prefix'> </span>    matched_owner_strategy = variables.get(&quot;matched_owner_strategy&quot;, {})</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>436</td><td class='code'><span class='prefix'>+</span>    mail_intent = variables.get(&quot;mail_intent&quot;, &quot;&quot;)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>437</td><td class='code'><span class='prefix'>+</span>    is_inoutbound_mail = variables.get(&quot;is_inoutbound_mail&quot;, None)</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>438</td><td class='code'><span class='prefix'>+</span>    fixed_reply_message = variables.get(&quot;fixed_reply_message&quot;, &quot;&quot;)</td></tr>
+<tr class='line context'><td class='num'>436</td><td class='num'>439</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line context'><td class='num'>437</td><td class='num'>440</td><td class='code'><span class='prefix'> </span>    parsed_company_name = variables.get(&quot;company_name&quot;, &quot;&quot;)</td></tr>
+<tr class='line context'><td class='num'>438</td><td class='num'>441</td><td class='code'><span class='prefix'> </span>    parsed_job_type = variables.get(&quot;job_type&quot;, &quot;&quot;)</td></tr>
+<tr class='line context'><td class='num'>439</td><td class='num'>442</td><td class='code'><span class='prefix'> </span>    if parsed_company_name:</td></tr>
+<tr class='line context'><td class='num'>440</td><td class='num'>443</td><td class='code'><span class='prefix'> </span>        email_info[&quot;company_name&quot;] = parsed_company_name</td></tr>
+<tr class='line context'><td class='num'>441</td><td class='num'>444</td><td class='code'><span class='prefix'> </span>    if parsed_job_type:</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>在简道云写入节点中读取邮件意图相关变量，为动态回复做准备</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+    mail_intent = variables.get(&quot;mail_intent&quot;, &quot;&quot;)
++    is_inoutbound_mail = variables.get(&quot;is_inoutbound_mail&quot;, None)
++    fixed_reply_message = variables.get(&quot;fixed_reply_message&quot;, &quot;&quot;)</pre>
+  <div><strong>这几行在做什么：</strong>从 variables 中安全提取三个路由节点输出的字段，为空时设默认值，避免后续 KeyError</div>
+  <div><strong>语法补齐：</strong>字典 get 方法带默认值</div>
+</div>
+
+  <div><strong>重点检查：</strong>确认这三个变量名与路由节点 output 的 key 完全一致（大小写、下划线）</div>
+  <div><strong>建议测试：</strong>手动构造 variables 包含这三项，验证能否正确读取</div>
+</div>
+
+</section>
+<section class='hunk' id='unstaged-003-002'>
+<div class='hunk-header'><code>unstaged-003-002</code><span>@@ -479,13 +482,19 @@ def main(*args, tool_args: dict, **kwargs) -&gt; typing.Any:</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>479</td><td class='num'>482</td><td class='code'><span class='prefix'> </span>                raise Exception(f&quot;email log write did not return _id: {json.dumps(log_response, ensure_ascii=False)}&quot;)</td></tr>
+<tr class='line context'><td class='num'>480</td><td class='num'>483</td><td class='code'><span class='prefix'> </span>            data[&quot;variables&quot;][&quot;email_log_id&quot;] = email_log_id</td></tr>
+<tr class='line context'><td class='num'>481</td><td class='num'>484</td><td class='code'><span class='prefix'> </span>        except Exception as exc:</td></tr>
+<tr class='line context'><td class='num'>482</td><td class='num'>485</td><td class='code'><span class='prefix'> </span>            email_log_error = str(exc)</td></tr>
+<tr class='line context'><td class='num'>483</td><td class='num'>486</td><td class='code'><span class='prefix'> </span>            data[&quot;variables&quot;][&quot;email_log_error&quot;] = email_log_error</td></tr>
+<tr class='line context'><td class='num'>484</td><td class='num'>487</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line delete'><td class='num'>485</td><td class='num'></td><td class='code'><span class='prefix'>-</span>        if validation_pass is False:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>488</td><td class='code'><span class='prefix'>+</span>        is_other_mail = mail_intent == &quot;其他&quot; or is_inoutbound_mail is False</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>489</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>490</td><td class='code'><span class='prefix'>+</span>        if is_other_mail:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>491</td><td class='code'><span class='prefix'>+</span>            order_kind, order_payload, order_response = None, None, None</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>492</td><td class='code'><span class='prefix'>+</span>            data[&quot;variables&quot;][&quot;order_write_skipped&quot;] = True</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>493</td><td class='code'><span class='prefix'>+</span>            data[&quot;variables&quot;][&quot;order_write_skip_reason&quot;] = &quot;邮件意图不是出入库&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>494</td><td class='code'><span class='prefix'>+</span>        elif validation_pass is False:</td></tr>
+<tr class='line context'><td class='num'>486</td><td class='num'>495</td><td class='code'><span class='prefix'> </span>            order_kind, order_payload, order_response = None, None, None</td></tr>
+<tr class='line context'><td class='num'>487</td><td class='num'>496</td><td class='code'><span class='prefix'> </span>            data[&quot;variables&quot;][&quot;order_write_skipped&quot;] = True</td></tr>
+<tr class='line context'><td class='num'>488</td><td class='num'>497</td><td class='code'><span class='prefix'> </span>            data[&quot;variables&quot;][&quot;order_write_skip_reason&quot;] = validation_message</td></tr>
+<tr class='line context'><td class='num'>489</td><td class='num'>498</td><td class='code'><span class='prefix'> </span>        else:</td></tr>
+<tr class='line context'><td class='num'>490</td><td class='num'>499</td><td class='code'><span class='prefix'> </span>            order_kind, order_payload, order_response = _write_order_form(</td></tr>
+<tr class='line context'><td class='num'>491</td><td class='num'>500</td><td class='code'><span class='prefix'> </span>                email_info=email_info,</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>重构订单写入跳过逻辑，区分‘非出入库邮件’和‘校验失败’两种跳过原因</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+        is_other_mail = mail_intent == &quot;其他&quot; or is_inoutbound_mail is False
++
++        if is_other_mail:
++            order_kind, order_payload, order_response = None, None, None
++            data[&quot;variables&quot;][&quot;order_write_skipped&quot;] = True
++            data[&quot;variables&quot;][&quot;order_write_skip_reason&quot;] = &quot;邮件意图不是出入库&quot;</pre>
+  <div><strong>这几行在做什么：</strong>定义 is_other_mail 布尔标志，若为真则跳过订单写入，并记录明确原因，便于监控统计</div>
+  <div><strong>语法补齐：</strong>变量赋值、布尔表达式、if 分支、字典赋值</div>
+</div>
+
+  <div><strong>重点检查：</strong>确认 is_other_mail 判断逻辑是否覆盖所有非出入库场景（如 mail_intent 为空字符串）</div>
+  <div><strong>建议测试：</strong>传入 mail_intent=&quot;其他&quot;，验证 order_write_skipped 是否为 True 且 skip_reason 正确</div>
+</div>
+
+</section>
+<section class='hunk' id='unstaged-003-003'>
+<div class='hunk-header'><code>unstaged-003-003</code><span>@@ -501,35 +510,61 @@ def main(*args, tool_args: dict, **kwargs) -&gt; typing.Any:</span></div>
+<table class='diff-table'>
+<tbody>
+<tr class='line context'><td class='num'>501</td><td class='num'>510</td><td class='code'><span class='prefix'> </span>            data[&quot;variables&quot;][&quot;order_form_type&quot;] = order_kind</td></tr>
+<tr class='line context'><td class='num'>502</td><td class='num'>511</td><td class='code'><span class='prefix'> </span>            order_form_id = _extract_created_id(order_response)</td></tr>
+<tr class='line context'><td class='num'>503</td><td class='num'>512</td><td class='code'><span class='prefix'> </span>            if not order_form_id:</td></tr>
+<tr class='line context'><td class='num'>504</td><td class='num'>513</td><td class='code'><span class='prefix'> </span>                raise Exception(f&quot;order form write did not return _id: {json.dumps(order_response, ensure_ascii=False)}&quot;)</td></tr>
+<tr class='line context'><td class='num'>505</td><td class='num'>514</td><td class='code'><span class='prefix'> </span>            data[&quot;variables&quot;][&quot;order_form_id&quot;] = order_form_id</td></tr>
+<tr class='line context'><td class='num'>506</td><td class='num'>515</td><td class='code'><span class='prefix'> </span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>516</td><td class='code'><span class='prefix'>+</span>        if is_other_mail:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>517</td><td class='code'><span class='prefix'>+</span>            reply_message = fixed_reply_message or (</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>518</td><td class='code'><span class='prefix'>+</span>                &quot;您好，您的邮件已收到。当前邮件内容不属于出入库任务单处理范围，&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>519</td><td class='code'><span class='prefix'>+</span>                &quot;系统暂不生成入库单或出库单。如需处理出入库业务，请发送包含出入库任务单附件的邮件。&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>520</td><td class='code'><span class='prefix'>+</span>            )</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>521</td><td class='code'><span class='prefix'>+</span>        elif validation_pass is False:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>522</td><td class='code'><span class='prefix'>+</span>            error_lines = validation_errors or [validation_message or &quot;未通过必填字段或出入库策略校验&quot;]</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>523</td><td class='code'><span class='prefix'>+</span>            reply_message = (</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>524</td><td class='code'><span class='prefix'>+</span>                &quot;您好，您发送的出入库任务单已收到，邮件记录也已保存，&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>525</td><td class='code'><span class='prefix'>+</span>                &quot;但由于以下原因，暂未生成入库单/出库单：\n\n&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>526</td><td class='code'><span class='prefix'>+</span>                + &quot;\n&quot;.join([f&quot;{index}. {error}&quot; for index, error in enumerate(error_lines, start=1)])</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>527</td><td class='code'><span class='prefix'>+</span>                + &quot;\n\n请修改附件中的相关数据后重新发送。&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>528</td><td class='code'><span class='prefix'>+</span>            )</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>529</td><td class='code'><span class='prefix'>+</span>        elif order_form_id:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>530</td><td class='code'><span class='prefix'>+</span>            reply_message = (</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>531</td><td class='code'><span class='prefix'>+</span>                f&quot;您好，您的{order_kind or &#x27;出入库&#x27;}任务单已校验通过并成功写入，&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>532</td><td class='code'><span class='prefix'>+</span>                &quot;邮件记录也已保存。&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>533</td><td class='code'><span class='prefix'>+</span>            )</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>534</td><td class='code'><span class='prefix'>+</span>        else:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>535</td><td class='code'><span class='prefix'>+</span>            reply_message = &quot;您好，邮件已收到，邮件记录已保存，但未识别到有效的入库或出库任务单。&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>536</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>537</td><td class='code'><span class='prefix'>+</span>        if email_center_error or email_log_error:</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>538</td><td class='code'><span class='prefix'>+</span>            reply_message += &quot;\n\n邮件留痕提示：邮件中心或邮件日志写入存在异常，请联系管理员检查。&quot;</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>539</td><td class='code'><span class='prefix'>+</span></td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>540</td><td class='code'><span class='prefix'>+</span>        write_summary = {</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>541</td><td class='code'><span class='prefix'>+</span>            &quot;mail_intent&quot;: mail_intent,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>542</td><td class='code'><span class='prefix'>+</span>            &quot;is_inoutbound_mail&quot;: is_inoutbound_mail,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>543</td><td class='code'><span class='prefix'>+</span>            &quot;email_log_written&quot;: bool(email_log_id),</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>544</td><td class='code'><span class='prefix'>+</span>            &quot;email_log_id&quot;: email_log_id,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>545</td><td class='code'><span class='prefix'>+</span>            &quot;email_log_error&quot;: email_log_error,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>546</td><td class='code'><span class='prefix'>+</span>            &quot;appendix_count&quot;: len(appendix_keys),</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>547</td><td class='code'><span class='prefix'>+</span>            &quot;email_center_written&quot;: bool(email_center_id),</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>548</td><td class='code'><span class='prefix'>+</span>            &quot;email_center_id&quot;: email_center_id,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>549</td><td class='code'><span class='prefix'>+</span>            &quot;email_center_mode&quot;: center_mode,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>550</td><td class='code'><span class='prefix'>+</span>            &quot;email_center_error&quot;: email_center_error,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>551</td><td class='code'><span class='prefix'>+</span>            &quot;validation_pass&quot;: validation_pass,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>552</td><td class='code'><span class='prefix'>+</span>            &quot;validation_message&quot;: validation_message,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>553</td><td class='code'><span class='prefix'>+</span>            &quot;validation_errors&quot;: validation_errors,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>554</td><td class='code'><span class='prefix'>+</span>            &quot;matched_owner_strategy&quot;: matched_owner_strategy,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>555</td><td class='code'><span class='prefix'>+</span>            &quot;stock_check_debug&quot;: stock_check_debug,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>556</td><td class='code'><span class='prefix'>+</span>            &quot;order_form_type&quot;: order_kind or &quot;&quot;,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>557</td><td class='code'><span class='prefix'>+</span>            &quot;order_written&quot;: bool(order_form_id),</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>558</td><td class='code'><span class='prefix'>+</span>            &quot;order_form_id&quot;: order_form_id,</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>559</td><td class='code'><span class='prefix'>+</span>        }</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>560</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;reply_message&quot;] = reply_message</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>561</td><td class='code'><span class='prefix'>+</span>        data[&quot;variables&quot;][&quot;write_summary&quot;] = write_summary</td></tr>
+<tr class='line context'><td class='num'>507</td><td class='num'>562</td><td class='code'><span class='prefix'> </span>        data[&quot;result.success&quot;] = True</td></tr>
+<tr class='line context'><td class='num'>508</td><td class='num'>563</td><td class='code'><span class='prefix'> </span>        data[&quot;result.inference&quot;] = True</td></tr>
+<tr class='line delete'><td class='num'>509</td><td class='num'></td><td class='code'><span class='prefix'>-</span>        data[&quot;result&quot;] = json.dumps(</td></tr>
+<tr class='line delete'><td class='num'>510</td><td class='num'></td><td class='code'><span class='prefix'>-</span>            {</td></tr>
+<tr class='line delete'><td class='num'>511</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;email_log_written&quot;: bool(email_log_id),</td></tr>
+<tr class='line delete'><td class='num'>512</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;email_log_id&quot;: email_log_id,</td></tr>
+<tr class='line delete'><td class='num'>513</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;email_log_error&quot;: email_log_error,</td></tr>
+<tr class='line delete'><td class='num'>514</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;appendix_count&quot;: len(appendix_keys),</td></tr>
+<tr class='line delete'><td class='num'>515</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;email_center_written&quot;: bool(email_center_id),</td></tr>
+<tr class='line delete'><td class='num'>516</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;email_center_id&quot;: email_center_id,</td></tr>
+<tr class='line delete'><td class='num'>517</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;email_center_mode&quot;: center_mode,</td></tr>
+<tr class='line delete'><td class='num'>518</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;email_center_error&quot;: email_center_error,</td></tr>
+<tr class='line delete'><td class='num'>519</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;validation_pass&quot;: validation_pass,</td></tr>
+<tr class='line delete'><td class='num'>520</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;validation_message&quot;: validation_message,</td></tr>
+<tr class='line delete'><td class='num'>521</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;validation_errors&quot;: validation_errors,</td></tr>
+<tr class='line delete'><td class='num'>522</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;matched_owner_strategy&quot;: matched_owner_strategy,</td></tr>
+<tr class='line delete'><td class='num'>523</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;stock_check_debug&quot;: stock_check_debug,</td></tr>
+<tr class='line delete'><td class='num'>524</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;order_form_type&quot;: order_kind or &quot;&quot;,</td></tr>
+<tr class='line delete'><td class='num'>525</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;order_written&quot;: bool(order_form_id),</td></tr>
+<tr class='line delete'><td class='num'>526</td><td class='num'></td><td class='code'><span class='prefix'>-</span>                &quot;order_form_id&quot;: order_form_id,</td></tr>
+<tr class='line delete'><td class='num'>527</td><td class='num'></td><td class='code'><span class='prefix'>-</span>            },</td></tr>
+<tr class='line delete'><td class='num'>528</td><td class='num'></td><td class='code'><span class='prefix'>-</span>            ensure_ascii=False</td></tr>
+<tr class='line delete'><td class='num'>529</td><td class='num'></td><td class='code'><span class='prefix'>-</span>        )</td></tr>
+<tr class='line add'><td class='num'></td><td class='num'>564</td><td class='code'><span class='prefix'>+</span>        data[&quot;result&quot;] = reply_message</td></tr>
+<tr class='line context'><td class='num'>530</td><td class='num'>565</td><td class='code'><span class='prefix'> </span>        return data</td></tr>
+<tr class='line context'><td class='num'>531</td><td class='num'>566</td><td class='code'><span class='prefix'> </span>    except Exception as exc:</td></tr>
+<tr class='line context'><td class='num'>532</td><td class='num'>567</td><td class='code'><span class='prefix'> </span>        data[&quot;result.success&quot;] = False</td></tr>
+<tr class='line context'><td class='num'>533</td><td class='num'>568</td><td class='code'><span class='prefix'> </span>        data[&quot;result.inference&quot;] = False</td></tr>
+<tr class='line context'><td class='num'>534</td><td class='num'>569</td><td class='code'><span class='prefix'> </span>        data[&quot;result&quot;] = str(exc)</td></tr>
+<tr class='line context'><td class='num'>535</td><td class='num'>570</td><td class='code'><span class='prefix'> </span>        return data</td></tr>
+<tr class='line meta'><td class='num'></td><td class='num'></td><td class='code'><span class='prefix'>w</span>warning: in the working copy of &#x27;02_附件订单解析节点.py&#x27;, LF will be replaced by CRLF the next time Git touches it</td></tr>
+<tr class='line meta'><td class='num'></td><td class='num'></td><td class='code'><span class='prefix'>w</span>warning: in the working copy of &#x27;03_出入库策略校验节点.py&#x27;, LF will be replaced by CRLF the next time Git touches it</td></tr>
+<tr class='line meta'><td class='num'></td><td class='num'></td><td class='code'><span class='prefix'>w</span>warning: in the working copy of &#x27;03_简道云写入节点.py&#x27;, LF will be replaced by CRLF the next time Git touches it</td></tr>
+</tbody>
+</table>
+
+<div class='annotation'>
+  <div class='purpose'><strong>这一段为什么改：</strong>重构自动回复文案生成逻辑，支持多场景差异化提示，并将执行摘要存入 variables</div>
+  
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+        if is_other_mail:
++            reply_message = fixed_reply_message or (
++                &quot;您好，您的邮件已收到。当前邮件内容不属于出入库任务单处理范围，&quot;
++                &quot;系统暂不生成入库单或出库单。如需处理出入库业务，请发送包含出入库任务单附件的邮件。&quot;
++            )</pre>
+  <div><strong>这几行在做什么：</strong>当邮件被路由为‘其他’时，优先使用路由节点提供的 fixed_reply_message，否则用兜底文案</div>
+  <div><strong>语法补齐：</strong>if 分支、or 短路求值、字符串拼接</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+        elif validation_pass is False:
++            error_lines = validation_errors or [validation_message or &quot;未通过必填字段或出入库策略校验&quot;]
++            reply_message = (
++                &quot;您好，您发送的出入库任务单已收到，邮件记录也已保存，&quot;
++                &quot;但由于以下原因，暂未生成入库单/出库单：\n\n&quot;
++                + &quot;\n&quot;.join([f&quot;{index}. {error}&quot; for index, error in enumerate(error_lines, start=1)])
++                + &quot;\n\n请修改附件中的相关数据后重新发送。&quot;
++            )</pre>
+  <div><strong>这几行在做什么：</strong>校验失败时，将 errors 列表格式化为带编号的换行文本，嵌入固定模板</div>
+  <div><strong>语法补齐：</strong>elif 分支、列表推导式、enumerate、join 字符串拼接</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+        elif order_form_id:
++            reply_message = (
++                f&quot;您好，您的{order_kind or &#x27;出入库&#x27;}任务单已校验通过并成功写入，&quot;
++                &quot;邮件记录也已保存。&quot;
++            )</pre>
+  <div><strong>这几行在做什么：</strong>订单成功写入时，用 f-string 插入 order_kind（如&#x27;入库&#x27;），增强用户感知</div>
+  <div><strong>语法补齐：</strong>elif 分支、f-string、or 默认值</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+        else:
++            reply_message = &quot;您好，邮件已收到，邮件记录已保存，但未识别到有效的入库或出库任务单。&quot;</pre>
+  <div><strong>这几行在做什么：</strong>其他情况（如无 order_form_id 但 validation_pass 为 True）给出中性提示</div>
+  <div><strong>语法补齐：</strong>else 分支、字符串赋值</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+        if email_center_error or email_log_error:
++            reply_message += &quot;\n\n邮件留痕提示：邮件中心或邮件日志写入存在异常，请联系管理员检查。&quot;</pre>
+  <div><strong>这几行在做什么：</strong>若日志写入失败，在回复末尾追加运维提示，不影响主业务反馈</div>
+  <div><strong>语法补齐：</strong>if 分支、+= 字符串追加</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+        write_summary = {
++            &quot;mail_intent&quot;: mail_intent,
++            &quot;is_inoutbound_mail&quot;: is_inoutbound_mail,
++            &quot;email_log_written&quot;: bool(email_log_id),
++            ... // 省略中间键
++            &quot;order_written&quot;: bool(order_form_id),
++            &quot;order_form_id&quot;: order_form_id,
++        }
++        data[&quot;variables&quot;][&quot;reply_message&quot;] = reply_message
++        data[&quot;variables&quot;][&quot;write_summary&quot;] = write_summary</pre>
+  <div><strong>这几行在做什么：</strong>构建完整执行快照 write_summary，包含所有关键开关和 ID，存入 variables 供审计或重试</div>
+  <div><strong>语法补齐：</strong>字典定义、bool() 转换、字典赋值</div>
+</div>
+
+<div class='code-note'>
+  <div class='code-note-title'>对应代码摘录</div>
+  <pre>+        data[&quot;result&quot;] = reply_message</pre>
+  <div><strong>这几行在做什么：</strong>将最终生成的人类可读回复文本直接作为 result 输出，替代原来的 JSON 结构</div>
+  <div><strong>语法补齐：</strong>字典键赋值</div>
+</div>
+
+  <div><strong>重点检查：</strong>检查 reply_message 中所有字符串拼接是否使用 \n 保证换行，以及 f-string 中 order_kind 是否可能为 None 导致格式错误</div>
+  <div><strong>建议测试：</strong>分别测试 is_other_mail=True / validation_pass=False / order_form_id 存在 / 全部异常四种场景，验证 reply_message 内容准确</div>
+</div>
+
+</section>
+</article>
+</section>
+<section class='summary'>
+<h2>未跟踪文件</h2>
+<div class='list-block'><h3>这些文件还没被 Git 纳入版本控制</h3><ul><li>变更Diff旁注提示词_20260716_114346.txt</li><li>变更Diff旁注结果_20260716_114346.json</li><li>变更Diff理解报告_20260716_114346.html</li><li>变更Diff理解报告_最新.html</li></ul></div>
+</section>
+</main>
+</body>
+</html>

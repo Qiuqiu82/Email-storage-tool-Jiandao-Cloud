@@ -2,8 +2,6 @@ import json
 import re
 import typing
 
-import requests
-
 
 data = {
     "result": "",
@@ -88,6 +86,8 @@ def _split_items(text):
 
 
 def _post_json(url, payload, timeout=60):
+    import requests
+
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -215,6 +215,8 @@ def _sample_rows(rows, limit=5):
 
 
 def _query_stock(unit, department_code, sku="", lotatt04=""):
+    import requests
+
     payload = {
         "unit": unit or "普工路仓库",
         "pageSize": 200,
@@ -369,6 +371,24 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     email_info = variables.get("email_info", {}) or {}
     orders = variables.get("source_order_info", []) or []
     job_type = _safe_get({"job_type": variables.get("job_type")}, "job_type", default="") or _safe_get(email_info, "job_type", default="")
+
+    if variables.get("is_inoutbound_mail") is False or variables.get("mail_intent") == "其他":
+        data["variables"]["validation_pass"] = None
+        data["variables"]["validation_message"] = "邮件意图不是出入库，已跳过出入库策略校验"
+        data["variables"]["validation_errors"] = []
+        data["variables"]["stock_check_debug"] = []
+        data["variables"]["matched_owner_strategy"] = {}
+        data["result.success"] = True
+        data["result.inference"] = True
+        data["result"] = json.dumps(
+            {
+                "validation_pass": None,
+                "validation_message": data["variables"]["validation_message"],
+                "mail_intent": variables.get("mail_intent", "其他"),
+            },
+            ensure_ascii=False
+        )
+        return data
 
     errors = []
     config_row = {}
