@@ -6,8 +6,6 @@ from datetime import datetime
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-import requests
-
 
 data = {
     "result": "",
@@ -69,6 +67,18 @@ def _normalize_message_id(value):
     return text.strip().strip(",;，；")
 
 
+def _message_id_variants(value):
+    clean_value = _normalize_message_id(value)
+    if not clean_value:
+        return []
+    variants = [clean_value, f"{clean_value},", f"{clean_value}，"]
+    result = []
+    for item in variants:
+        if item and item not in result:
+            result.append(item)
+    return result
+
+
 def _wrap(value):
     return {"value": value}
 
@@ -91,6 +101,8 @@ def _post_json(url, payload):
 
 
 def _post_json_requests(url, payload):
+    import requests
+
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -118,6 +130,8 @@ def _extract_data_id(response, fallback=""):
 
 
 def _get_upload_tokens(entry_id, transaction_id):
+    import requests
+
     payload = {
         "app_id": APP_ID,
         "entry_id": entry_id,
@@ -135,6 +149,8 @@ def _get_upload_tokens(entry_id, transaction_id):
 
 
 def _download_file_bytes(file_url):
+    import requests
+
     response = requests.get(file_url, timeout=60)
     if response.status_code != 200:
         raise Exception(f"download attachment failed: {response.status_code}")
@@ -142,6 +158,8 @@ def _download_file_bytes(file_url):
 
 
 def _upload_single_file(upload_url, token, filename, file_bytes):
+    import requests
+
     mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     headers = {
         "Authorization": f"Bearer {API_KEY}"
@@ -350,27 +368,83 @@ def _write_email_log(email_info, email_center_id=""):
 
 
 def _find_email_center_record(main_email_id):
-    payload = {
-        "app_id": APP_ID,
-        "entry_id": EMAIL_CENTER_ENTRY_ID,
-        "filter": {
-            "rel": "and",
-            "cond": [
-                {
-                    "field": "main_email_id",
-                    "type": "text",
-                    "method": "eq",
-                    "value": [main_email_id]
-                }
-            ]
-        },
-        "limit": 10
-    }
-    result = _post_json_requests(LIST_URL, payload)
-    rows = result.get("data", []) or []
-    if not rows:
-        return {}
-    return rows[-1]
+    for candidate in _message_id_variants(main_email_id):
+        payload = {
+            "app_id": APP_ID,
+            "entry_id": EMAIL_CENTER_ENTRY_ID,
+            "filter": {
+                "rel": "and",
+                "cond": [
+                    {
+                        "field": "main_email_id",
+                        "type": "text",
+                        "method": "eq",
+                        "value": [candidate]
+                    }
+                ]
+            },
+            "limit": 10
+        }
+        result = _post_json_requests(LIST_URL, payload)
+        rows = result.get("data", []) or []
+        if rows:
+            return rows[-1]
+    return {}
+
+
+def _list_email_log_records_by_main_email_id(main_email_id):
+    records = []
+    seen_ids = set()
+    for candidate in _message_id_variants(main_email_id):
+        payload = {
+            "app_id": APP_ID,
+            "entry_id": EMAIL_LOG_ENTRY_ID,
+            "filter": {
+                "rel": "and",
+                "cond": [
+                    {
+                        "field": "main_email_id",
+                        "type": "text",
+                        "method": "eq",
+                        "value": [candidate]
+                    }
+                ]
+            },
+            "limit": 100
+        }
+        result = _post_json_requests(LIST_URL, payload)
+        for row in result.get("data", []) or []:
+            row_id = _text_value(row.get("_id", ""))
+            if row_id and row_id not in seen_ids:
+                records.append(row)
+                seen_ids.add(row_id)
+    return records
+
+
+def _sync_email_log_center_refs(main_email_id, email_center_id):
+    clean_main_email_id = _normalize_message_id(main_email_id)
+    if not clean_main_email_id or not email_center_id:
+        return []
+
+    updated = []
+    for row in _list_email_log_records_by_main_email_id(clean_main_email_id):
+        row_id = _text_value(row.get("_id", ""))
+        if not row_id:
+            continue
+        payload = _build_update_payload(
+            entry_id=EMAIL_LOG_ENTRY_ID,
+            data_id=row_id,
+            data_payload={
+                "main_email_id": _wrap(clean_main_email_id),
+                "email_center_ref": _wrap(email_center_id),
+            }
+        )
+        response = _post_json_requests(UPDATE_URL, payload)
+        updated.append({
+            "email_log_id": row_id,
+            "response": response,
+        })
+    return updated
 
 
 def _write_email_center(email_info):
@@ -463,6 +537,8 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
         email_center_error = ""
         email_log_id = ""
         email_log_error = ""
+        email_log_ref_sync_error = ""
+        email_log_ref_sync_result = []
         appendix_keys = []
 
         try:
@@ -497,6 +573,17 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
         except Exception as exc:
             email_log_error = str(exc)
             data["variables"]["email_log_error"] = email_log_error
+
+        try:
+            if email_center_id:
+                email_log_ref_sync_result = _sync_email_log_center_refs(
+                    email_info.get("main_email_id", ""),
+                    email_center_id
+                )
+                data["variables"]["email_log_ref_sync_result"] = email_log_ref_sync_result
+        except Exception as exc:
+            email_log_ref_sync_error = str(exc)
+            data["variables"]["email_log_ref_sync_error"] = email_log_ref_sync_error
 
         is_other_mail = mail_intent == "其他" or is_inoutbound_mail is False
 
@@ -556,6 +643,8 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
             "email_log_written": bool(email_log_id),
             "email_log_id": email_log_id,
             "email_log_error": email_log_error,
+            "email_log_ref_sync_count": len(email_log_ref_sync_result),
+            "email_log_ref_sync_error": email_log_ref_sync_error,
             "appendix_count": len(appendix_keys),
             "email_center_written": bool(email_center_id),
             "email_center_id": email_center_id,
