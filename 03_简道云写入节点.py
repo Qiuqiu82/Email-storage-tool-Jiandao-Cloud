@@ -58,6 +58,17 @@ def _text_value(value):
     return str(value).strip()
 
 
+def _normalize_message_id(value):
+    text = _text_value(value)
+    if not text:
+        return ""
+    start = text.find("<")
+    end = text.find(">", start + 1)
+    if start >= 0 and end > start:
+        return text[start:end + 1]
+    return text.strip().strip(",;，；")
+
+
 def _wrap(value):
     return {"value": value}
 
@@ -425,6 +436,8 @@ def main(*args, tool_args: dict, **kwargs) -> typing.Any:
     data = _new_data()
     variables = kwargs.get("variables", {}) or {}
     email_info = dict(variables.get("email_info", {}) or {})
+    email_info["message_id"] = _normalize_message_id(email_info.get("message_id", ""))
+    email_info["main_email_id"] = _normalize_message_id(email_info.get("main_email_id", ""))
     customer_info = variables.get("customer_info", []) or []
     driver_vehicle_info = variables.get("driver_vehicle_info", []) or []
     source_order_info = variables.get("source_order_info", []) or []

@@ -1,4 +1,5 @@
 import json
+import re
 import typing
 from email.utils import parseaddr
 from urllib.parse import unquote
@@ -47,6 +48,16 @@ def _normalize_text(value):
     if isinstance(value, list):
         return "\n".join([str(item) for item in value if item not in (None, "")]).strip()
     return str(value).strip()
+
+
+def _normalize_message_id(value):
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    match = re.search(r"<[^<>]+>", text)
+    if match:
+        return match.group(0)
+    return text.strip().strip(",;，；")
 
 
 def _split_addresses(raw_value):
@@ -113,10 +124,12 @@ def _collect_sources(kwargs):
 def _get_main_email_id(headers, fallback_message_id):
     reference_text = headers.get("References", "") or headers.get("references", "")
     if reference_text:
-        first_reference = str(reference_text).split()[0].strip()
+        reference_ids = re.findall(r"<[^<>]+>", str(reference_text))
+        first_reference = reference_ids[0] if reference_ids else str(reference_text).replace(",", " ").split()[0].strip()
+        first_reference = _normalize_message_id(first_reference)
         if first_reference:
             return first_reference
-    return fallback_message_id
+    return _normalize_message_id(fallback_message_id)
 
 
 def _infer_job_type(subject, body):
@@ -145,8 +158,8 @@ def _normalize_email_info(kwargs):
     if not isinstance(attachments, list):
         attachments = []
 
-    header_message_id = _normalize_text(headers.get("Message-ID", "") or headers.get("message-id", ""))
-    payload_message_id = _normalize_text(_safe_get(merged, "message_id", default=""))
+    header_message_id = _normalize_message_id(headers.get("Message-ID", "") or headers.get("message-id", ""))
+    payload_message_id = _normalize_message_id(_safe_get(merged, "message_id", default=""))
     message_id = header_message_id or payload_message_id
     main_email_id = _get_main_email_id(headers, message_id)
 
